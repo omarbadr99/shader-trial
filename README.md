@@ -43,9 +43,26 @@ filters applied per line:
 
 Presets: **Bleed / Xerox / Smear / Spray**.
 
-## Porting notes (Framer etc.)
+## Framer
 
-Everything lives in one `<script>` + one `<svg><defs>`. To reuse: inject the
-defs, add `.ink-line` to any per-line text elements, and run the same
-assign-on-scroll loop. In Framer this maps to a code component / override that
-wraps children and splits them per line.
+`framer/InkBleed.tsx` is a ready-made Framer code component:
+
+1. In Framer: left sidebar → **Assets** tab → **Code** → **+** → New code
+   file → replace its contents with `InkBleed.tsx` → rename it `InkBleed`.
+2. Drag the component from Assets anywhere onto your page (it can stay tiny).
+3. Name the text layers you want affected (double-click the layer name in the
+   Layers panel, e.g. `Ink`), then type that name into the component's
+   **Target names** property. Multiple names are comma-separated. Every layer
+   with a matching name gets the effect — or connect layers to **Content**
+   instead.
+4. All dials appear as native controls in the right sidebar. **Split lines**
+   makes multi-line paragraphs degrade line by line.
+
+The canvas shows a static preview mapped across the component's own frame;
+the real scroll behavior runs in **Preview** and on the published site.
+
+## Other site builders
+
+The same recipe works anywhere you can add custom HTML/JS (Webflow embed,
+Squarespace code block, plain sites): copy the `<svg><defs>` + `<script>`
+from `index.html`, and tag your text elements with `class="ink-line"`.

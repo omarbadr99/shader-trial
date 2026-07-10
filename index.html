@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ink Bleed — scroll-degraded text</title>
+<style>
+  :root{
+    --paper:#f2efe8;
+    --ink:#101010;
+  }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html{ scroll-behavior:smooth; }
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:"Helvetica Neue", Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  .page{ padding:4vh 4vw 20vh; max-width:1500px; margin:0 auto; }
+
+  header.top{
+    display:flex; justify-content:space-between; align-items:baseline;
+    font-size:13px; font-weight:600; letter-spacing:.06em; text-transform:uppercase;
+    padding-bottom:2vh;
+  }
+
+  h1.display{
+    font-size:clamp(60px, 14.5vw, 240px);
+    line-height:.86;
+    font-weight:800;
+    letter-spacing:-.035em;
+    text-transform:uppercase;
+    margin:6vh 0 4vh;
+  }
+  h1.display .ink-line{ display:block; }
+
+  .intro{
+    max-width:46ch;
+    font-size:clamp(15px, 1.35vw, 19px);
+    line-height:1.45;
+    margin-bottom:10vh;
+  }
+  .intro .ink-line{ display:block; }
+
+  section{ margin-bottom:9vh; }
+  h2.sec{
+    font-size:12px; font-weight:700; letter-spacing:.14em; text-transform:uppercase;
+    border-top:1.5px solid var(--ink);
+    padding-top:10px; margin-bottom:26px;
+    display:flex; justify-content:space-between;
+  }
+  .row{
+    display:grid;
+    grid-template-columns: 1.2fr 1fr .5fr;
+    gap:2vw;
+    align-items:baseline;
+    padding:7px 0;
+    font-size:clamp(17px, 1.9vw, 27px);
+    font-weight:700;
+    letter-spacing:-.01em;
+    text-transform:uppercase;
+  }
+  .row .meta{ font-size:.62em; font-weight:500; letter-spacing:.02em; text-transform:none; }
+  .row .yr{ text-align:right; font-weight:500; font-size:.62em; }
+
+  section.invert{
+    background:var(--ink); color:var(--paper);
+    padding:6vh 4vw 8vh; margin-left:-4vw; margin-right:-4vw;
+  }
+  section.invert h2.sec{ border-top-color:var(--paper); }
+
+  .bignote{
+    font-size:clamp(26px, 4.6vw, 74px);
+    font-weight:800; line-height:1.02; letter-spacing:-.03em; text-transform:uppercase;
+    max-width:20ch;
+  }
+  .bignote .ink-line{ display:block; }
+
+  footer{ font-size:12px; letter-spacing:.08em; text-transform:uppercase; opacity:.7; }
+
+  /* the lines the effect drives */
+  .ink-line{ }
+
+  /* ---------- control panel ---------- */
+  .panel{
+    position:fixed; top:12px; right:12px; z-index:50;
+    width:236px;
+    background:rgba(252,251,248,.92);
+    backdrop-filter:blur(6px);
+    border:1.5px solid #111;
+    font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size:11px;
+    color:#111;
+    user-select:none;
+  }
+  .panel-head{
+    display:flex; justify-content:space-between; align-items:center;
+    padding:8px 10px;
+    border-bottom:1.5px solid #111;
+    font-weight:700; letter-spacing:.1em; cursor:pointer;
+  }
+  .panel-body{ padding:10px 12px 12px; display:grid; gap:9px; }
+  .panel.closed .panel-body{ display:none; }
+  .ctl{ display:grid; gap:3px; }
+  .ctl label{ display:flex; justify-content:space-between; }
+  .ctl label b{ font-weight:400; opacity:.55; }
+  .ctl input[type=range]{
+    width:100%; height:14px; appearance:none; background:transparent; cursor:pointer;
+  }
+  .ctl input[type=range]::-webkit-slider-runnable-track{ height:2px; background:#111; }
+  .ctl input[type=range]::-webkit-slider-thumb{
+    appearance:none; width:11px; height:11px; border-radius:50%;
+    background:#111; margin-top:-4.5px;
+  }
+  .ctl input[type=range]::-moz-range-track{ height:2px; background:#111; }
+  .ctl input[type=range]::-moz-range-thumb{ width:11px; height:11px; border:0; border-radius:50%; background:#111; }
+  .toggles{ display:flex; align-items:center; gap:6px; }
+  .btnrow{ display:flex; gap:6px; flex-wrap:wrap; }
+  .panel button{
+    font:inherit; background:none; border:1.5px solid #111; color:#111;
+    padding:3px 7px; cursor:pointer; text-transform:uppercase; letter-spacing:.05em;
+  }
+  .panel button:hover{ background:#111; color:#f2efe8; }
+  .panel button.on{ background:#111; color:#f2efe8; }
+
+  @media (max-width:700px){
+    .panel{ width:200px; }
+    .row{ grid-template-columns:1fr .4fr; }
+    .row .meta{ display:none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- filter bank lives here, rebuilt by JS whenever a dial moves -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs id="filterDefs"></defs>
+</svg>
+
+<div class="panel" id="panel">
+  <div class="panel-head" id="panelHead"><span>INK BLEED</span><span>[–]</span></div>
+  <div class="panel-body" id="panelBody"></div>
+</div>
+
+<div class="page">
+  <header class="top">
+    <span>Omar Badr</span>
+    <span>Shader Trial 01 — Ink Bleed</span>
+  </header>
+
+  <h1 class="display">
+    <span class="ink-line">Selected</span>
+    <span class="ink-line">Works</span>
+  </h1>
+
+  <p class="intro">
+    <span class="ink-line">An index of projects, printed on a machine</span>
+    <span class="ink-line">running low on toner. Everything below the</span>
+    <span class="ink-line">bleed line dissolves into ink — scroll and</span>
+    <span class="ink-line">it pulls itself back together.</span>
+  </p>
+
+  <section>
+    <h2 class="sec"><span>Project</span><span>Role</span><span>Year</span></h2>
+    <div class="row ink-line"><span>Coutumes</span><span class="meta">Front-end &amp; back-end development</span><span class="yr">2026</span></div>
+    <div class="row ink-line"><span>Eleva</span><span class="meta">Creative developer</span><span class="yr">2025</span></div>
+    <div class="row ink-line"><span>Decathlon Lifestyle</span><span class="meta">Creative developer</span><span class="yr">2025</span></div>
+    <div class="row ink-line"><span>Templier</span><span class="meta">Front-end &amp; back-end developer</span><span class="yr">2025</span></div>
+    <div class="row ink-line"><span>Cashapp</span><span class="meta">Creative developer</span><span class="yr">2025</span></div>
+    <div class="row ink-line"><span>Magicstreet</span><span class="meta">Front-end &amp; back-end developer</span><span class="yr">2024</span></div>
+    <div class="row ink-line"><span>Héloïse Thibodeau</span><span class="meta">Front-end &amp; back-end developer</span><span class="yr">2024</span></div>
+    <div class="row ink-line"><span>Decathland</span><span class="meta">Creative developer</span><span class="yr">2024</span></div>
+    <div class="row ink-line"><span>Vendredi Society</span><span class="meta">Front-end developer</span><span class="yr">2024</span></div>
+    <div class="row ink-line"><span>Turon</span><span class="meta">Front-end &amp; back-end developer</span><span class="yr">2024</span></div>
+    <div class="row ink-line"><span>Tigermilk</span><span class="meta">Front-end &amp; back-end developer</span><span class="yr">2023</span></div>
+    <div class="row ink-line"><span>Silex</span><span class="meta">Creative developer</span><span class="yr">2023</span></div>
+    <div class="row ink-line"><span>La Grande Ourse</span><span class="meta">Front-end developer</span><span class="yr">2023</span></div>
+    <div class="row ink-line"><span>Bureau Brutal</span><span class="meta">Type &amp; interaction</span><span class="yr">2022</span></div>
+    <div class="row ink-line"><span>Papier Machine</span><span class="meta">Creative developer</span><span class="yr">2022</span></div>
+  </section>
+
+  <section class="invert">
+    <h2 class="sec"><span>Inverted — the ink inherits any text color</span><span>†</span></h2>
+    <p class="bignote">
+      <span class="ink-line">White ink</span>
+      <span class="ink-line">bleeds too —</span>
+      <span class="ink-line">no color is</span>
+      <span class="ink-line">hard-coded.</span>
+    </p>
+  </section>
+
+  <section>
+    <h2 class="sec"><span>Recognitions</span><span>Sel.</span></h2>
+    <div class="row ink-line"><span>Awwwards SOTD</span><span class="meta">×6</span><span class="yr">21–26</span></div>
+    <div class="row ink-line"><span>FWA of the Day</span><span class="meta">×3</span><span class="yr">22–25</span></div>
+    <div class="row ink-line"><span>GSAP Site of the Day</span><span class="meta">×5</span><span class="yr">23–26</span></div>
+    <div class="row ink-line"><span>Webby Nominee</span><span class="meta">×2</span><span class="yr">2025</span></div>
+    <div class="row ink-line"><span>CSSDA Best UI</span><span class="meta">×1</span><span class="yr">2024</span></div>
+  </section>
+
+  <footer>
+    <span class="ink-line">End of index — everything above is fiction, the ink is real.</span>
+  </footer>
+</div>
+
+<script>
+/* =========================================================================
+   INK BLEED — live-text ink degradation via an SVG filter bank
+   -------------------------------------------------------------------------
+   Idea: build N filters of increasing strength (level 1..N). Each .ink-line
+   is assigned a level from its vertical position in the viewport:
+   above the "bleed line" → no filter, at the bottom edge → level N.
+   All filters shape the text's ALPHA only, so any text color survives.
+   ========================================================================= */
+
+const P = {
+  area:      45,   // % of viewport height where bleed begins (0 = whole screen bleeds)
+  intensity: 60,   // max strength at the bottom edge
+  random:    45,   // turbulence frequency — low = big swells, high = jitter
+  dots:      45,   // fly-away spray amount
+  solidity:  90,   // 100 = hard solid ink, low = translucent watercolor
+  patchy:    12,   // photocopy dropout / toner starvation
+  drag:      0,    // vertical misprint smear
+  hover:     true, // resolve a line on mouseover
+  seed:      7,
+  levels:    10,
+};
+
+const defs  = document.getElementById('filterDefs');
+const lines = Array.from(document.querySelectorAll('.ink-line'));
+
+/* ---------- build one filter for normalized strength t (0..1] ----------
+   sf = size factor: filters are built per font-size bucket so the effect
+   scales with the text instead of destroying small type.               */
+const BUCKETS = { S: 0.55, M: 1.0, L: 1.8 };
+
+function filterXML(bucket, k){
+  const sf  = BUCKETS[bucket];
+  const t   = k / P.levels;
+  const s   = t * (P.intensity / 100);          // effective strength
+  const sd  = P.seed;
+  const sol = P.solidity / 100;
+
+  // bleed: dilate guarantees ink gain even on thin strokes, then blur +
+  // a lowered threshold point turns the fuzz back into fat solid ink
+  const dil   = ((0.2 + 1.6 * s) * sf).toFixed(2);
+  const blur  = ((0.3 + 3.0 * s) * sf).toFixed(2);
+  const thr   = Math.max(0.08, 0.5 - 0.34 * s);
+  const slope = (4 + 14 * sol).toFixed(1);      // low solidity = soft edge
+  const icpt  = (-slope * thr).toFixed(3);
+
+  // organic edge wobble — gentle, low frequency; fattens irregularly
+  const wf  = ((0.008 + (P.random / 100) * 0.05) / sf).toFixed(4);
+  const wob = ((1.2 + 7 * s) * sf).toFixed(1);
+
+  // photocopy dropout
+  const patchAmt = ((P.patchy / 100) * (0.35 + 0.85 * s)).toFixed(3);
+  const grainF   = (0.10 / Math.sqrt(sf)).toFixed(3);
+
+  // fly-away spray
+  const dotAmt   = (P.dots / 100) * s;
+  const sprayScl = ((5 + 42 * dotAmt) * sf).toFixed(1);
+  const sprayF   = (0.30 / sf).toFixed(3);
+
+  // misprint drag
+  const dragScl  = ((P.drag / 100) * 55 * s * sf).toFixed(1);
+  const dripBlur = ((P.drag / 100) * 9 * s * sf).toFixed(2);
+
+  let f = `<filter id="inkf-${bucket}-${k}" x="-15%" width="130%" y="-180%" height="460%" color-interpolation-filters="sRGB">`;
+
+  // 1 — vertical misprint drag: streaky noise, x-channel forced flat so the
+  //     smear only travels up/down, plus a vertical drip blur
+  let base = 'SourceGraphic';
+  if (P.drag > 0){
+    f += `<feTurbulence type="fractalNoise" baseFrequency="${(0.045 / sf).toFixed(3)} 0.003" numOctaves="2" seed="${sd}" result="dragN"/>
+          <feColorMatrix in="dragN" type="matrix" values="0 0 0 0 0.5  0 1 0 0 0  0 0 1 0 0  0 0 0 1 0" result="dragN2"/>
+          <feDisplacementMap in="SourceGraphic" in2="dragN2" scale="${dragScl}" xChannelSelector="R" yChannelSelector="G" result="dragged0"/>
+          <feGaussianBlur in="dragged0" stdDeviation="0 ${dripBlur}" result="dragged"/>`;
+    base = 'dragged';
+  }
+
+  // 2 — bleed: dilate + blur, wobble the domain, re-threshold later
+  f += `<feMorphology in="${base}" operator="dilate" radius="${dil}" result="fat"/>
+        <feGaussianBlur in="fat" stdDeviation="${blur}" result="blurred"/>
+        <feTurbulence type="fractalNoise" baseFrequency="${wf}" numOctaves="2" seed="${sd + 1}" result="wobN"/>
+        <feDisplacementMap in="blurred" in2="wobN" scale="${wob}" xChannelSelector="R" yChannelSelector="G" result="warped"/>`;
+
+  // 3 — photocopy dropout: subtract grain from the alpha before thresholding
+  let preThr = 'warped';
+  if (P.patchy > 0){
+    f += `<feTurbulence type="fractalNoise" baseFrequency="${grainF}" numOctaves="2" seed="${sd + 2}" result="grainN"/>
+          <feColorMatrix in="grainN" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  1.6 0 0 0 -0.15" result="grainA"/>
+          <feComposite in="warped" in2="grainA" operator="arithmetic" k1="0" k2="1" k3="-${patchAmt}" k4="0" result="eroded"/>`;
+    preThr = 'eroded';
+  }
+
+  // 4 — threshold: this is what turns fuzz into INK
+  f += `<feComponentTransfer in="${preThr}" result="ink">
+          <feFuncA type="linear" slope="${slope}" intercept="${icpt}"/>
+        </feComponentTransfer>`;
+
+  let out = 'ink';
+
+  // 5 — fly-away spray: throw chunks of ink outward, erode them to sparse
+  //     clumps, then blur + re-threshold to round them into droplets
+  if (dotAmt > 0.01){
+    f += `<feTurbulence type="turbulence" baseFrequency="${sprayF}" numOctaves="1" seed="${sd + 3}" result="sprayN"/>
+          <feDisplacementMap in="ink" in2="sprayN" scale="${sprayScl}" xChannelSelector="R" yChannelSelector="G" result="spray0"/>
+          <feTurbulence type="fractalNoise" baseFrequency="${(0.14 / sf).toFixed(3)}" numOctaves="2" seed="${sd + 4}" result="sgN"/>
+          <feColorMatrix in="sgN" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  1.6 0 0 0 -0.25" result="sgA"/>
+          <feComposite in="spray0" in2="sgA" operator="arithmetic" k1="1.8" k2="0" k3="0" k4="0" result="sprayE"/>
+          <feGaussianBlur in="sprayE" stdDeviation="${(0.5 * sf).toFixed(2)}" result="sprayB"/>
+          <feComponentTransfer in="sprayB" result="spray">
+            <feFuncA type="linear" slope="10" intercept="-2.2"/>
+          </feComponentTransfer>
+          <feMerge result="merged"><feMergeNode in="spray"/><feMergeNode in="ink"/></feMerge>`;
+    out = 'merged';
+  }
+
+  // 6 — solidity cap: below 100 the ink goes translucent
+  if (sol < 0.999){
+    f += `<feComponentTransfer in="${out}">
+            <feFuncA type="linear" slope="${(0.35 + 0.65 * sol).toFixed(3)}" intercept="0"/>
+          </feComponentTransfer>`;
+  }
+
+  return f + `</filter>`;
+}
+
+function buildFilters(){
+  let xml = '';
+  for (const b of Object.keys(BUCKETS))
+    for (let k = 1; k <= P.levels; k++) xml += filterXML(b, k);
+  defs.innerHTML = xml;
+}
+
+function bucketOf(el){
+  const px = parseFloat(getComputedStyle(el).fontSize) || 16;
+  return px < 26 ? 'S' : px <= 60 ? 'M' : 'L';
+}
+function tagBuckets(){ for (const el of lines) el._bucket = bucketOf(el); }
+
+/* ---------- assign a level to every line from its viewport position ---- */
+function assignLevels(){
+  const vh = window.innerHeight;
+  const startY = vh * (P.area / 100);
+  const span = Math.max(1, vh - startY);
+
+  for (const el of lines){
+    if (el._hoverLock) continue;
+    const r = el.getBoundingClientRect();
+    if (r.bottom < -100 || r.top > vh + 300){ el.style.filter = 'none'; continue; }
+    const y = (r.top + r.bottom) / 2;
+    let n = (y - startY) / span;
+    n = Math.min(1, Math.max(0, n));
+    n = Math.pow(n, 1.3);              // ease in: subtle mid-screen, heavy at the edge
+    setLevel(el, Math.round(n * P.levels));
+  }
+}
+
+function setLevel(el, lvl){
+  if (el._lvl === lvl) return;
+  el._lvl = lvl;
+  el.style.filter = lvl > 0 ? `url(#inkf-${el._bucket}-${lvl})` : 'none';
+}
+
+let raf = null;
+function requestAssign(){
+  if (raf) return;
+  raf = requestAnimationFrame(() => { raf = null; assignLevels(); });
+}
+addEventListener('scroll', requestAssign, { passive:true });
+addEventListener('resize', () => { tagBuckets(); requestAssign(); });
+
+/* ---------- hover: pull a line back together, step by step -------------- */
+for (const el of lines){
+  el.addEventListener('mouseenter', () => {
+    if (!P.hover) return;
+    el._hoverLock = true;
+    clearInterval(el._anim);
+    el._anim = setInterval(() => {
+      if ((el._lvl || 0) <= 0){ clearInterval(el._anim); return; }
+      setLevel(el, el._lvl - 1);
+    }, 30);
+  });
+  el.addEventListener('mouseleave', () => {
+    clearInterval(el._anim);
+    el._hoverLock = false;
+    requestAssign();
+  });
+}
+
+/* ---------- control panel ---------------------------------------------- */
+const SLIDERS = [
+  ['area',      'Bleed starts at', '% of screen'],
+  ['intensity', 'Intensity',       'max strength'],
+  ['random',    'Randomness',      'blob scale'],
+  ['dots',      'Fly-away spray',  'ink dots'],
+  ['solidity',  'Ink solidity',    'solid ↔ wash'],
+  ['patchy',    'Photocopy patch', 'toner dropout'],
+  ['drag',      'Misprint drag',   'vertical smear'],
+];
+
+const PRESETS = {
+  'Bleed':  { intensity:60, random:45, dots:45, solidity:90, patchy:12, drag:0  },
+  'Xerox':  { intensity:55, random:70, dots:25, solidity:80, patchy:65, drag:10 },
+  'Smear':  { intensity:70, random:40, dots:15, solidity:88, patchy:8,  drag:80 },
+  'Spray':  { intensity:65, random:55, dots:95, solidity:75, patchy:20, drag:0  },
+};
+
+const body = document.getElementById('panelBody');
+
+function rebuild(){ buildFilters(); for (const el of lines) el._lvl = -1; assignLevels(); }
+
+for (const [key, name, hint] of SLIDERS){
+  const wrap = document.createElement('div');
+  wrap.className = 'ctl';
+  wrap.innerHTML = `<label><span>${name} <b>${hint}</b></span><span id="v-${key}">${P[key]}</span></label>
+                    <input type="range" min="0" max="100" value="${P[key]}" id="s-${key}">`;
+  body.appendChild(wrap);
+  wrap.querySelector('input').addEventListener('input', e => {
+    P[key] = +e.target.value;
+    document.getElementById('v-' + key).textContent = P[key];
+    rebuild();
+  });
+}
+
+const toggles = document.createElement('div');
+toggles.className = 'toggles';
+toggles.innerHTML = `<button id="hoverBtn" class="${P.hover ? 'on' : ''}">Hover clears</button>
+                     <button id="seedBtn">Reseed</button>`;
+body.appendChild(toggles);
+
+document.getElementById('hoverBtn').addEventListener('click', e => {
+  P.hover = !P.hover;
+  e.target.classList.toggle('on', P.hover);
+});
+document.getElementById('seedBtn').addEventListener('click', () => {
+  P.seed = 1 + Math.floor(Math.random() * 500);
+  rebuild();
+});
+
+const presetRow = document.createElement('div');
+presetRow.className = 'btnrow';
+for (const [name, vals] of Object.entries(PRESETS)){
+  const b = document.createElement('button');
+  b.textContent = name;
+  b.addEventListener('click', () => {
+    Object.assign(P, vals);
+    for (const [key] of SLIDERS){
+      const sl = document.getElementById('s-' + key);
+      if (sl){ sl.value = P[key]; document.getElementById('v-' + key).textContent = P[key]; }
+    }
+    rebuild();
+  });
+  presetRow.appendChild(b);
+}
+body.appendChild(presetRow);
+
+document.getElementById('panelHead').addEventListener('click', () => {
+  document.getElementById('panel').classList.toggle('closed');
+});
+
+/* ---------- go ----------------------------------------------------------- */
+tagBuckets();
+buildFilters();
+assignLevels();
+</script>
+</body>
+</html>

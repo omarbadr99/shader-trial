@@ -48,8 +48,8 @@ uniform float uSpeckle;           // micro speckle in the plastic
 uniform float uGrain;
 uniform vec3  uBg;
 uniform float uSoft;              // silhouette AA in pixels
-uniform float uJitter;        // per-frame dither for the volume integral
-uniform float uTransparent;   // 1 = emit alpha, background pixels transparent
+uniform float uJitter;            // per-frame dither for the volume integral
+uniform float uTransparent;       // 1 = emit alpha, background pixels transparent
 
 uniform int   uBlobN;
 uniform vec4  uBlobA[MAXB];       // x angle, y half-width(rad), z tail(signed), w strength
@@ -68,10 +68,14 @@ float tubeR(float ths){
   return uTube * (1.0 + uTaper * cos(ths + 0.4));
 }
 
+float zWave(float ths){
+  return uOrganic * 0.07 * sin(3.0*ths - uOrgPhase*1.3);
+}
+
 float map(vec3 p){
   float th  = atan(p.y, p.x);
   float ths = th - uSpinPhase;
-  vec2 q = vec2(length(p.xy) - ringR(ths), p.z/uFlat);
+  vec2 q = vec2(length(p.xy) - ringR(ths), (p.z + zWave(ths))/uFlat);
   return (length(q) - tubeR(ths)) * 0.62 * uFlat;
 }
 
@@ -89,7 +93,7 @@ float hash3(vec3 p){ return fract(sin(dot(p, vec3(17.1,31.7,7.13)))*43758.5453);
 vec3 inkOD(vec3 p, out float coreW){
   float th  = atan(p.y, p.x);
   float ths = th - uSpinPhase;
-  vec2 q = vec2(length(p.xy) - ringR(ths), p.z/uFlat);
+  vec2 q = vec2(length(p.xy) - ringR(ths), (p.z + zWave(ths))/uFlat);
   float r  = tubeR(ths);
   float qn = length(q) / r;                   // 0 at core .. 1 at surface
   float core = 1.0 - uWall;                   // liquid lives inside the wall
@@ -299,6 +303,7 @@ interface Props {
     tiltSway: number
     tiltSpeed: number
     organicDrift: number
+    wobbleSpeed: number
     triLobe: number
     thickness: number
     flatten: number
@@ -394,7 +399,7 @@ export default function OrganicO(props: Props) {
             if (!isCanvas) {
                 ph.t += dt
                 ph.spin += dt * P.spin * 0.35
-                ph.org += dt * 0.5
+                ph.org += dt * P.wobbleSpeed * 1.1
                 for (let i = 0; i < blobs.length; i++) {
                     const b = blobs[i]
                     if (b.follow && cursor.has) {
@@ -499,6 +504,7 @@ OrganicO.defaultProps = {
     tiltSway: 0.5,
     tiltSpeed: 1,
     organicDrift: 0.25,
+    wobbleSpeed: 0.5,
     triLobe: 0.13,
     thickness: 0.21,
     flatten: 0.72,
@@ -542,7 +548,8 @@ addPropertyControls(OrganicO, {
     spin: { type: ControlType.Number, title: "Spin", min: -1, max: 1, step: 0.01 },
     tiltSway: { type: ControlType.Number, title: "Tilt sway", min: 0, max: 1, step: 0.01 },
     tiltSpeed: { type: ControlType.Number, title: "Tilt speed", min: 0, max: 2, step: 0.01 },
-    organicDrift: { type: ControlType.Number, title: "Organic drift", min: 0, max: 1, step: 0.01 },
+    organicDrift: { type: ControlType.Number, title: "Wobble", min: 0, max: 1, step: 0.01 },
+    wobbleSpeed: { type: ControlType.Number, title: "Wobble speed", min: 0, max: 2, step: 0.01 },
     triLobe: { type: ControlType.Number, title: "Tri-lobe", min: 0, max: 0.25, step: 0.005 },
     thickness: { type: ControlType.Number, title: "Thickness", min: 0.12, max: 0.45, step: 0.005 },
     flatten: { type: ControlType.Number, title: "Flatten", min: 0.5, max: 1, step: 0.01 },

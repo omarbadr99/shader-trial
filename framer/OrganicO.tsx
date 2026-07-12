@@ -60,8 +60,12 @@ uniform vec3  uBlobAbs[MAXB];     // -log(color): per-channel absorption
    harmonics of theta so the atan seam is invisible. */
 
 float ringR(float ths){
+  /* three localized corner bumps (mean-centered) instead of a cos wave:
+     the O grows soft vertices without denting inward between them */
+  float f = 0.5 + 0.5*cos(3.0*ths + 0.9);
+  f = f*f;
   return uRing * (1.0
-    + uLobe * cos(3.0*ths + 0.9)
+    + uLobe * 1.6 * (f - 0.375)
     + uOrganic * (0.05*cos(2.0*ths - uOrgPhase) + 0.03*sin(4.0*ths + 0.7*uOrgPhase)));
 }
 float tubeR(float ths){
@@ -305,6 +309,8 @@ interface Props {
     tiltSpeed: number
     organicDrift: number
     wobbleSpeed: number
+    shapeMorph: number
+    morphSpeed: number
     ringSize: number
     triLobe: number
     thickness: number
@@ -357,7 +363,7 @@ export default function OrganicO(props: Props) {
         const angles: number[] = []
         const dPh: number[] = []
         const dFq: number[] = []
-        const ph = { t: 2.5, spin: 0.3, org: 5 }
+        const ph = { t: 2.5, spin: 0.3, org: 5, morph: -Math.PI / 2 }
         const cursor = { angle: 0, has: false }
         let last = performance.now()
         let raf = 0
@@ -402,6 +408,7 @@ export default function OrganicO(props: Props) {
                 ph.t += dt
                 ph.spin += dt * P.spin * 0.35
                 ph.org += dt * P.wobbleSpeed * 1.1
+                ph.morph += dt * P.morphSpeed * 0.45
                 for (let i = 0; i < blobs.length; i++) {
                     const b = blobs[i]
                     if (b.follow && cursor.has) {
@@ -454,8 +461,10 @@ export default function OrganicO(props: Props) {
             gl.uniform1f(U.uRing, P.ringSize)
             gl.uniform1f(U.uTube, P.thickness)
             gl.uniform1f(U.uFlat, P.flatten)
-            gl.uniform1f(U.uTaper, P.taper)
-            gl.uniform1f(U.uLobe, P.triLobe)
+            const mLobe = 1 - P.shapeMorph * (0.5 + 0.5 * Math.sin(ph.morph))
+            const mTaper = 1 - P.shapeMorph * (0.5 + 0.5 * Math.sin(ph.morph * 0.77 + 1.9))
+            gl.uniform1f(U.uTaper, P.taper * mTaper)
+            gl.uniform1f(U.uLobe, P.triLobe * mLobe)
             gl.uniform1f(U.uOrganic, P.organicDrift)
             gl.uniform1f(U.uInk, P.inkAmount * 8)
             gl.uniform1f(U.uGravity, P.inkGravity)
@@ -508,8 +517,10 @@ OrganicO.defaultProps = {
     tiltSpeed: 1,
     organicDrift: 0.25,
     wobbleSpeed: 0.5,
+    shapeMorph: 1,
+    morphSpeed: 0.5,
     ringSize: 1,
-    triLobe: 0.13,
+    triLobe: 0.18,
     thickness: 0.21,
     flatten: 0.72,
     taper: 0.22,
@@ -554,8 +565,10 @@ addPropertyControls(OrganicO, {
     tiltSpeed: { type: ControlType.Number, title: "Tilt speed", min: 0, max: 2, step: 0.01 },
     organicDrift: { type: ControlType.Number, title: "Wobble", min: 0, max: 1, step: 0.01 },
     wobbleSpeed: { type: ControlType.Number, title: "Wobble speed", min: 0, max: 2, step: 0.01 },
+    shapeMorph: { type: ControlType.Number, title: "Shape morph", min: 0, max: 1, step: 0.01 },
+    morphSpeed: { type: ControlType.Number, title: "Morph speed", min: 0, max: 2, step: 0.01 },
     ringSize: { type: ControlType.Number, title: "Ring size", min: 0.35, max: 1.35, step: 0.01 },
-    triLobe: { type: ControlType.Number, title: "Tri-lobe", min: 0, max: 0.25, step: 0.005 },
+    triLobe: { type: ControlType.Number, title: "Tri-lobe", min: 0, max: 0.3, step: 0.005 },
     thickness: { type: ControlType.Number, title: "Thickness", min: 0.12, max: 0.45, step: 0.005 },
     flatten: { type: ControlType.Number, title: "Flatten", min: 0.5, max: 1, step: 0.01 },
     taper: { type: ControlType.Number, title: "Taper", min: 0, max: 0.4, step: 0.01 },

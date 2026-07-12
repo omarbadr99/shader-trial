@@ -146,13 +146,19 @@
     <div class="ctl"><label>Wobble speed <b id="v-wobspd"></b></label>
       <input type="range" id="wobspd" min="0" max="2" step="0.01"></div>
 
+    <div class="ctl"><label>Shape morph <b id="v-morph"></b></label>
+      <input type="range" id="morph" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Morph speed <b id="v-morphspd"></b></label>
+      <input type="range" id="morphspd" min="0" max="2" step="0.01"></div>
+
     <div class="sec">SHAPE</div>
 
     <div class="ctl"><label>Ring size <b id="v-ring"></b></label>
       <input type="range" id="ring" min="0.35" max="1.35" step="0.01"></div>
 
     <div class="ctl"><label>Tri-lobe <b id="v-lobe"></b></label>
-      <input type="range" id="lobe" min="0" max="0.25" step="0.005"></div>
+      <input type="range" id="lobe" min="0" max="0.3" step="0.005"></div>
 
     <div class="ctl"><label>Thickness <b id="v-tube"></b></label>
       <input type="range" id="tube" min="0.12" max="0.45" step="0.005"></div>
@@ -254,8 +260,12 @@ uniform vec3  uBlobAbs[MAXB];     // -log(color): per-channel absorption
    harmonics of theta so the atan seam is invisible. */
 
 float ringR(float ths){
+  /* three localized corner bumps (mean-centered) instead of a cos wave:
+     the O grows soft vertices without denting inward between them */
+  float f = 0.5 + 0.5*cos(3.0*ths + 0.9);
+  f = f*f;
   return uRing * (1.0
-    + uLobe * cos(3.0*ths + 0.9)
+    + uLobe * 1.6 * (f - 0.375)
     + uOrganic * (0.05*cos(2.0*ths - uOrgPhase) + 0.03*sin(4.0*ths + 0.7*uOrgPhase)));
 }
 float tubeR(float ths){
@@ -495,7 +505,8 @@ const PRESETS = {
   reference: {
     dials: { ink:0.9, gravity:0.8, light:0.7, glare:0.65,
              spin:0.2, tilt:0.5, tiltspd:1.0, wob:0.25, wobspd:0.5,
-             ring:1.0, lobe:0.13, tube:0.21, flat:0.72, taper:0.22, zoom:1.18,
+             morph:1.0, morphspd:0.5,
+             ring:1.0, lobe:0.18, tube:0.21, flat:0.72, taper:0.22, zoom:1.18,
              frost:0.45, wall:0.22, speckle:0.4, soft:1.4, grain:0.035, bg:0.94 },
     blobs: [
       { color:"#101c33", size:0.55, speed:0.32,  amt:1.0,  tail:0.6, drift:0.45 },
@@ -505,7 +516,8 @@ const PRESETS = {
   lava: {
     dials: { ink:0.8, gravity:0.55, light:0.6, glare:0.55,
              spin:0.12, tilt:0.4, tiltspd:0.8, wob:0.35, wobspd:0.8,
-             ring:1.0, lobe:0.11, tube:0.34, flat:0.78, taper:0.1, zoom:1.0,
+             morph:0.7, morphspd:0.7,
+             ring:1.0, lobe:0.15, tube:0.34, flat:0.78, taper:0.1, zoom:1.0,
              frost:0.9, wall:0.26, speckle:0.6, soft:1.6, grain:0.03, bg:0.945 },
     blobs: [
       { color:"#1c2f56", size:0.5,  speed:0.25,  amt:0.9, tail:0.55, drift:0.6 },
@@ -516,7 +528,8 @@ const PRESETS = {
   ghost: {
     dials: { ink:0.4, gravity:0.45, light:0.5, glare:0.4,
              spin:0.1, tilt:0.35, tiltspd:0.7, wob:0.15, wobspd:0.5,
-             ring:1.0, lobe:0.12, tube:0.28, flat:0.75, taper:0.1, zoom:1.0,
+             morph:0.5, morphspd:0.4,
+             ring:1.0, lobe:0.16, tube:0.28, flat:0.75, taper:0.1, zoom:1.0,
              frost:1.0, wall:0.3, speckle:0.4, soft:2.2, grain:0.025, bg:0.95 },
     blobs: [
       { color:"#3d5a80", size:0.9, speed:0.22, amt:0.55, tail:0.5, drift:0.5 },
@@ -525,8 +538,8 @@ const PRESETS = {
 };
 
 const DIALS = ["ink","gravity","light","glare","spin","tilt","tiltspd","wob",
-               "wobspd","ring","lobe","tube","flat","taper","zoom","frost",
-               "wall","speckle","soft","grain","bg"];
+               "wobspd","morph","morphspd","ring","lobe","tube","flat","taper",
+               "zoom","frost","wall","speckle","soft","grain","bg"];
 
 function hex2rgb(h){ return [1,3,5].map(i => parseInt(h.slice(i, i+2), 16)/255); }
 function absorb(hex){
@@ -615,6 +628,8 @@ function snapshot(){
 
 function applyPreset(p){
   Object.assign(S, p.dials);
+  for (const id of DIALS)
+    if (S[id] == null) S[id] = PRESETS.reference.dials[id];
   for (const id of DIALS){
     const el = document.getElementById(id);
     el.value = S[id];
@@ -732,7 +747,7 @@ addEventListener("pointerup", () => { drag.on = false; canvas.classList.remove("
      so the sway precesses and never repeats the same path
    - blobs circulate on their own clocks, independent of the shape
 ============================================================ */
-const ph = { t: 0, spin: 0, org: 0 };
+const ph = { t: 0, spin: 0, org: 0, morph: 0 };
 let last = performance.now();
 let frameN = 0;
 
@@ -763,6 +778,7 @@ function frame(now){
     ph.t    += dt;
     ph.spin += dt * S.spin * 0.35;
     ph.org  += dt * S.wobspd * 1.1;
+    ph.morph += dt * S.morphspd * 0.45;
     for (const b of blobs){
       if (b.follow && cursor.has){
         b.angle += shortestArc(b.angle, cursor.angle) * Math.min(1, dt*4);
@@ -802,8 +818,12 @@ function frame(now){
   gl.uniform1f(U.uRing, S.ring);
   gl.uniform1f(U.uTube, S.tube);
   gl.uniform1f(U.uFlat, S.flat);
-  gl.uniform1f(U.uTaper, S.taper);
-  gl.uniform1f(U.uLobe, S.lobe);
+  /* Tri-lobe / Taper dials are maximums: Shape morph swings the live value
+     between (1 - morph) x max and max, on offset clocks */
+  const mLobe  = 1 - S.morph * (0.5 + 0.5*Math.sin(ph.morph));
+  const mTaper = 1 - S.morph * (0.5 + 0.5*Math.sin(ph.morph*0.77 + 1.9));
+  gl.uniform1f(U.uTaper, S.taper * mTaper);
+  gl.uniform1f(U.uLobe, S.lobe * mLobe);
   gl.uniform1f(U.uOrganic, S.wob);
   gl.uniform1f(U.uInk, S.ink * 8.0);
   gl.uniform1f(U.uGravity, S.gravity);

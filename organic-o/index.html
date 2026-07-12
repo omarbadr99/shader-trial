@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Organic O — fluid ink ring shader</title>
+<style>
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html,body{ height:100%; overflow:hidden; }
+  body{
+    background:#eceeef;
+    font-family:"Helvetica Neue", Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  canvas#gl{ position:fixed; inset:0; width:100%; height:100%; display:block; cursor:grab; }
+  canvas#gl.dragging{ cursor:grabbing; }
+
+  .corner{
+    position:fixed; left:16px; top:14px; z-index:40;
+    font-size:12px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:#333;
+    pointer-events:none;
+  }
+  .corner small{ display:block; font-weight:500; letter-spacing:.04em; text-transform:none; opacity:.55; margin-top:3px; }
+
+  /* ---------- control panel (matches the ink-bleed trial) ---------- */
+  .panel{
+    position:fixed; top:12px; right:12px; z-index:50;
+    width:250px; max-height:calc(100vh - 24px); overflow:auto;
+    background:rgba(252,251,248,.92);
+    backdrop-filter:blur(6px);
+    border:1.5px solid #111;
+    font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size:11px;
+    color:#111;
+    user-select:none;
+  }
+  .panel-head{
+    display:flex; justify-content:space-between; align-items:center;
+    padding:8px 10px;
+    border-bottom:1.5px solid #111;
+    font-weight:700; letter-spacing:.1em; cursor:pointer;
+    position:sticky; top:0; background:rgba(252,251,248,.97);
+  }
+  .panel-body{ padding:10px 12px 12px; display:grid; gap:9px; }
+  .panel.closed .panel-body{ display:none; }
+  .ctl{ display:grid; gap:3px; }
+  .ctl label{ display:flex; justify-content:space-between; }
+  .ctl label b{ font-weight:400; opacity:.55; }
+  .ctl input[type=range]{
+    width:100%; height:14px; appearance:none; background:transparent; cursor:pointer;
+  }
+  .ctl input[type=range]::-webkit-slider-runnable-track{ height:2px; background:#111; }
+  .ctl input[type=range]::-webkit-slider-thumb{
+    appearance:none; width:11px; height:11px; border-radius:50%;
+    background:#111; margin-top:-4.5px;
+  }
+  .ctl input[type=range]::-moz-range-track{ height:2px; background:#111; }
+  .ctl input[type=range]::-moz-range-thumb{ width:11px; height:11px; border:0; border-radius:50%; background:#111; }
+  .toggles{ display:flex; align-items:center; gap:6px; }
+  .btnrow{ display:flex; gap:6px; flex-wrap:wrap; }
+  .btnrow button{
+    font:inherit; background:none; border:1.5px solid #111; padding:3px 8px; cursor:pointer;
+  }
+  .btnrow button:hover{ background:#111; color:#f2efe8; }
+  .ctl input[type=color]{
+    width:100%; height:22px; padding:0; border:1.5px solid #111; background:none; cursor:pointer;
+  }
+  .hint{ opacity:.5; line-height:1.4; }
+</style>
+</head>
+<body>
+
+<canvas id="gl"></canvas>
+
+<div class="corner">
+  Organic O — fluid ink ring
+  <small>drag to orbit · shader trial 02</small>
+</div>
+
+<div class="panel" id="panel">
+  <div class="panel-head" id="panelHead"><span>INK RING</span><span id="panelToggle">—</span></div>
+  <div class="panel-body">
+
+    <div class="btnrow" id="presets">
+      <button data-p="reference">Reference</button>
+      <button data-p="calm">Calm</button>
+      <button data-p="deep">Deep ink</button>
+      <button data-p="ghost">Ghost</button>
+    </div>
+
+    <div class="ctl"><label>Flow speed <b id="v-flow"></b></label>
+      <input type="range" id="flow" min="-2" max="2" step="0.01"></div>
+
+    <div class="ctl toggles">
+      <input type="checkbox" id="follow"><label for="follow">Ink follows cursor</label>
+    </div>
+
+    <div class="ctl"><label>Ink amount <b id="v-ink"></b></label>
+      <input type="range" id="ink" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Ink spread <b id="v-spread"></b></label>
+      <input type="range" id="spread" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Second blob <b id="v-blob2"></b></label>
+      <input type="range" id="blob2" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Ink color</label>
+      <input type="color" id="inkcol"></div>
+
+    <div class="ctl"><label>Frost <b id="v-frost"></b></label>
+      <input type="range" id="frost" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Thickness <b id="v-tube"></b></label>
+      <input type="range" id="tube" min="0.1" max="0.45" step="0.005"></div>
+
+    <div class="ctl"><label>Taper <b id="v-taper"></b></label>
+      <input type="range" id="taper" min="0" max="0.5" step="0.01"></div>
+
+    <div class="ctl"><label>Shape <b id="v-lobe"></b></label>
+      <input type="range" id="lobe" min="0" max="0.3" step="0.005"></div>
+
+    <div class="ctl"><label>Wobble <b id="v-wob"></b></label>
+      <input type="range" id="wob" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Wobble speed <b id="v-wobspd"></b></label>
+      <input type="range" id="wobspd" min="0" max="2" step="0.01"></div>
+
+    <div class="ctl"><label>Spin <b id="v-spin"></b></label>
+      <input type="range" id="spin" min="-1" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Zoom <b id="v-zoom"></b></label>
+      <input type="range" id="zoom" min="0.5" max="2" step="0.01"></div>
+
+    <div class="ctl"><label>Softness <b id="v-soft"></b></label>
+      <input type="range" id="soft" min="0.5" max="8" step="0.1"></div>
+
+    <div class="ctl"><label>Grain <b id="v-grain"></b></label>
+      <input type="range" id="grain" min="0" max="0.12" step="0.002"></div>
+
+    <div class="ctl"><label>Background <b id="v-bg"></b></label>
+      <input type="range" id="bg" min="0.8" max="1" step="0.005"></div>
+
+    <div class="btnrow">
+      <button id="pause">Pause</button>
+      <button id="reset">Reset view</button>
+    </div>
+
+    <div class="hint">Raymarched SDF torus, ink = Beer–Lambert absorption integrated through the tube.</div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* ============================================================
+   GL setup
+============================================================ */
+const canvas = document.getElementById("gl");
+const gl = canvas.getContext("webgl2", { antialias:false, alpha:false });
+if (!gl) document.body.innerHTML = "<p style='padding:2em'>WebGL2 required.</p>";
+
+const VERT = `#version 300 es
+void main(){
+  vec2 v = vec2((gl_VertexID<<1)&2, gl_VertexID&2);
+  gl_Position = vec4(v*2.0-1.0, 0.0, 1.0);
+}`;
+
+const FRAG = `#version 300 es
+precision highp float;
+out vec4 O;
+
+uniform vec2  uRes;
+uniform float uYaw, uPitch;      // orbit (drag + idle tumble), radians
+uniform float uSpinPhase;        // in-plane rotation of the shape, integrated on CPU
+uniform float uWob;              // wobble phase, integrated on CPU
+uniform float uFlow1, uFlow2;    // ink blob angular positions, integrated on CPU
+uniform float uZoom;
+uniform float uTube;             // tube radius
+uniform float uTaper;            // tube radius variation around the ring
+uniform float uLobe;             // tri-lobe (rounded triangle) amount
+uniform float uWobAmp;           // organic deformation amount
+uniform float uInk;              // absorption strength
+uniform float uSpreadPow;        // blob sharpness exponent (small = wide)
+uniform float uBlob2;            // weight of the second, slower blob
+uniform vec3  uInkCol;           // ink transmission color
+uniform float uFrost;            // milky scattering strength
+uniform float uGrain;
+uniform vec3  uBg;
+uniform float uSoft;             // silhouette softness in pixels
+
+/* The ring lives in the xy-plane (axis = z) so it faces the camera
+   like an "O". theta is the angle around the ring. */
+
+float map(vec3 p){
+  float th  = atan(p.y, p.x);
+  float ths = th - uSpinPhase;                 // shape-relative angle
+  float R = 1.0
+    + uLobe * cos(3.0*ths + 0.9)
+    + uWobAmp * (0.10*cos(2.0*ths - uWob) + 0.06*sin(4.0*ths + uWob*0.7));
+  float z = p.z + uWobAmp * 0.10 * sin(3.0*ths - uWob*1.31);
+  vec2 q = vec2(length(p.xy) - R, z);
+  float r = uTube * (1.0 + uTaper*cos(2.0*ths - uWob*0.6) + uLobe*0.5*sin(3.0*ths + 1.7));
+  return (length(q) - r) * 0.72;               // conservative step factor
+}
+
+vec3 calcNormal(vec3 p){
+  const vec2 e = vec2(0.002, -0.002);
+  return normalize(
+    e.xyy*map(p+e.xyy) + e.yyx*map(p+e.yyx) +
+    e.yxy*map(p+e.yxy) + e.xxx*map(p+e.xxx));
+}
+
+/* ink density around the ring: one main blob + one slower counter-blob */
+float inkDen(vec3 p){
+  float th = atan(p.y, p.x);
+  float b1 = pow(0.5 + 0.5*cos(th - uFlow1), uSpreadPow);
+  float b2 = pow(0.5 + 0.5*cos(th - uFlow2), uSpreadPow*0.7);
+  return b1 + uBlob2*b2 + 0.02;                // small baseline = cool glass tint
+}
+
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+
+mat3 orbit(float yaw, float pitch){
+  float cy=cos(yaw), sy=sin(yaw), cp=cos(pitch), sp=sin(pitch);
+  mat3 ry = mat3(cy,0.,-sy, 0.,1.,0., sy,0.,cy);
+  mat3 rx = mat3(1.,0.,0., 0.,cp,sp, 0.,-sp,cp);
+  return ry*rx;
+}
+
+void main(){
+  vec2 uv = (gl_FragCoord.xy - 0.5*uRes) / uRes.y;
+
+  mat3 M = orbit(uYaw, uPitch);
+  float camD = 8.0/uZoom;
+  vec3 ro = M * vec3(0.0, 0.0, camD);
+  vec3 rd = M * normalize(vec3(uv*0.62, -1.0));
+
+  /* march */
+  float t = max(0.0, camD - 2.6);
+  float minD = 1e9, tAt = t;
+  bool hit = false;
+  for (int i=0; i<120; i++){
+    vec3 p = ro + rd*t;
+    float d = map(p);
+    if (d < minD){ minD = d; tAt = t; }
+    if (d < 0.0012){ hit = true; break; }
+    t += d;
+    if (t > camD + 2.6) break;
+  }
+
+  /* background: gentle vertical gradient + vignette + contact shadow */
+  float vig = length(uv)*0.55;
+  vec3 bg = uBg * (1.0 - 0.045*vig*vig) * (1.0 + 0.012*uv.y);
+  bg *= 1.0 - 0.05 * exp(-max(minD,0.0)*3.0);
+
+  /* silhouette coverage: shade at the closest-approach point on a near miss
+     so edges dissolve softly (the reference is shot soft-focus) */
+  float wpp = tAt * 1.24 / uRes.y;             // world units per pixel
+  float aa  = uSoft * wpp;
+  float alpha = hit ? 1.0 : clamp(1.0 - minD/aa, 0.0, 1.0);
+
+  vec3 col = bg;
+  if (alpha > 0.0){
+    float th0 = hit ? t : tAt;
+    vec3 p = ro + rd*th0;
+    vec3 n = calcNormal(p);
+
+    /* integrate ink density + thickness through the tube */
+    float sigma = 0.0, thick = 0.0;
+    float ti = th0 + 0.004;
+    for (int i=0; i<28; i++){
+      vec3 q = ro + rd*ti;
+      float d = map(q);
+      if (d > 0.004) break;
+      float st = max(-d*1.1, 0.014);
+      sigma += inkDen(q) * st;
+      thick += st;
+      ti += st;
+    }
+
+    /* Beer-Lambert in the hue-preserving form T = inkColor^s, so the
+       ink stays indigo on its way to black instead of graying out */
+    vec3 inkC = clamp(uInkCol, vec3(0.02), vec3(1.0));
+    float s = sigma * uInk;
+    vec3 Tink = pow(inkC, vec3(s));
+
+    /* frosted scattering: thin -> transparent, thick -> milk white,
+       and the milk itself is stained by the ink it sits behind */
+    float milk = 1.0 - exp(-thick * uFrost);
+    vec3 milkCol = vec3(0.955, 0.972, 0.99);
+    vec3 body = mix(bg * 1.02 * Tink, milkCol * pow(inkC, vec3(s*0.8)), milk);
+
+    /* soft top light + gentle fresnel rim + broad specular,
+       both dimmed where the ink is dense so the dark core stays dark */
+    float topLight = 0.5 + 0.5*n.y;
+    body *= 0.90 + 0.12*topLight;
+    float fres = pow(clamp(1.0 - dot(n, -rd), 0.0, 1.0), 3.0);
+    body += fres * vec3(0.10, 0.11, 0.13) * (0.3 + 0.7*milk) * (0.2 + 0.8*Tink);
+    vec3 ld = normalize(vec3(-0.45, 0.85, 0.55));
+    body += pow(max(dot(reflect(rd, n), ld), 0.0), 14.0) * 0.10 * (0.3 + 0.7*Tink);
+
+    col = mix(bg, body, alpha);
+  }
+
+  /* frosted grain (stronger on the body) */
+  float g = hash(gl_FragCoord.xy) - 0.5;
+  col += g * uGrain * (0.3 + 0.7*alpha);
+
+  O = vec4(col, 1.0);
+}`;
+
+function compile(type, src){
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+    throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
+  throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+const U = {};
+["uRes","uYaw","uPitch","uSpinPhase","uWob","uFlow1","uFlow2","uZoom","uTube",
+ "uTaper","uLobe","uWobAmp","uInk","uSpreadPow","uBlob2","uInkCol","uFrost",
+ "uGrain","uBg","uSoft"].forEach(n => U[n] = gl.getUniformLocation(prog, n));
+
+/* ============================================================
+   State, dials, presets
+============================================================ */
+const S = {};   // dial values
+const PRESETS = {
+  reference: { flow:0.55, follow:false, ink:0.72, spread:0.42, blob2:0.3,
+               inkcol:"#1d2b47", frost:0.85, tube:0.30, taper:0.22, lobe:0.14,
+               wob:0.5, wobspd:0.55, spin:0.18, zoom:1.0, soft:3.0,
+               grain:0.035, bg:0.936 },
+  calm:      { flow:0.25, follow:false, ink:0.4, spread:0.75, blob2:0.25,
+               inkcol:"#2a3d5c", frost:0.75, tube:0.27, taper:0.12, lobe:0.10,
+               wob:0.25, wobspd:0.3, spin:0.1, zoom:1.0, soft:3.5,
+               grain:0.025, bg:0.945 },
+  deep:      { flow:0.8, follow:false, ink:0.95, spread:0.35, blob2:0.7,
+               inkcol:"#101b30", frost:0.5, tube:0.33, taper:0.3, lobe:0.16,
+               wob:0.7, wobspd:0.8, spin:0.3, zoom:1.05, soft:2.5,
+               grain:0.045, bg:0.93 },
+  ghost:     { flow:0.4, follow:false, ink:0.18, spread:0.85, blob2:0.2,
+               inkcol:"#3d5a80", frost:0.95, tube:0.26, taper:0.1, lobe:0.12,
+               wob:0.35, wobspd:0.4, spin:0.12, zoom:1.0, soft:5.0,
+               grain:0.02, bg:0.955 },
+};
+
+const DIALS = ["flow","ink","spread","blob2","frost","tube","taper","lobe",
+               "wob","wobspd","spin","zoom","soft","grain","bg"];
+
+function hex2rgb(h){
+  return [1,3,5].map(i => parseInt(h.slice(i, i+2), 16) / 255);
+}
+function fmt(v){ return (+v).toFixed(2); }
+
+function applyPreset(name){
+  const p = PRESETS[name];
+  for (const k in p) S[k] = p[k];
+  for (const id of DIALS){
+    const el = document.getElementById(id);
+    el.value = S[id];
+    const lbl = document.getElementById("v-"+id);
+    if (lbl) lbl.textContent = fmt(S[id]);
+  }
+  document.getElementById("inkcol").value = S.inkcol;
+  document.getElementById("follow").checked = S.follow;
+}
+
+for (const id of DIALS){
+  document.getElementById(id).addEventListener("input", e => {
+    S[id] = +e.target.value;
+    const lbl = document.getElementById("v-"+id);
+    if (lbl) lbl.textContent = fmt(S[id]);
+  });
+}
+document.getElementById("inkcol").addEventListener("input", e => S.inkcol = e.target.value);
+document.getElementById("follow").addEventListener("change", e => S.follow = e.target.checked);
+document.getElementById("presets").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (b) applyPreset(b.dataset.p);
+});
+
+let paused = false;
+document.getElementById("pause").addEventListener("click", e => {
+  paused = !paused;
+  e.target.textContent = paused ? "Play" : "Pause";
+});
+document.getElementById("reset").addEventListener("click", () => {
+  drag.yaw = 0; drag.pitch = 0;
+});
+const panel = document.getElementById("panel");
+document.getElementById("panelHead").addEventListener("click", () => {
+  panel.classList.toggle("closed");
+  document.getElementById("panelToggle").textContent =
+    panel.classList.contains("closed") ? "+" : "—";
+});
+
+applyPreset("reference");
+
+/* ============================================================
+   Pointer: drag = orbit, cursor angle can drive the ink
+============================================================ */
+const drag = { on:false, x:0, y:0, yaw:0, pitch:0 };
+const cursor = { angle:0, has:false };
+
+canvas.addEventListener("pointerdown", e => {
+  drag.on = true; drag.x = e.clientX; drag.y = e.clientY;
+  canvas.classList.add("dragging");
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener("pointermove", e => {
+  const cx = e.clientX - innerWidth/2, cy = innerHeight/2 - e.clientY;
+  cursor.angle = Math.atan2(cy, cx);
+  cursor.has = true;
+  if (!drag.on) return;
+  drag.yaw   += (e.clientX - drag.x) * 0.005;
+  drag.pitch += (e.clientY - drag.y) * 0.005;
+  drag.pitch = Math.max(-1.2, Math.min(1.2, drag.pitch));
+  drag.x = e.clientX; drag.y = e.clientY;
+});
+addEventListener("pointerup", () => { drag.on = false; canvas.classList.remove("dragging"); });
+
+/* ============================================================
+   Render loop — phases integrated on CPU so speed dials
+   never make the animation jump
+============================================================ */
+const ph = { flow1: 2.1, flow2: 4.8, wob: 0, spin: 0, t: 0 };
+let last = performance.now();
+
+function shortestArc(a, b){
+  let d = (b - a) % (Math.PI*2);
+  if (d >  Math.PI) d -= Math.PI*2;
+  if (d < -Math.PI) d += Math.PI*2;
+  return d;
+}
+
+function resize(){
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  const w = Math.round(innerWidth*dpr), h = Math.round(innerHeight*dpr);
+  if (canvas.width !== w || canvas.height !== h){
+    canvas.width = w; canvas.height = h;
+    gl.viewport(0, 0, w, h);
+  }
+}
+
+function frame(now){
+  const dt = Math.min((now - last)/1000, 0.05);
+  last = now;
+
+  if (!paused){
+    ph.t += dt;
+    ph.wob  += dt * S.wobspd * 1.1;
+    ph.spin += dt * S.spin * 0.35;
+    if (S.follow && cursor.has){
+      ph.flow1 += shortestArc(ph.flow1, cursor.angle) * Math.min(1, dt*4);
+      ph.flow2 += shortestArc(ph.flow2, cursor.angle + Math.PI*0.7) * Math.min(1, dt*2.5);
+    } else {
+      ph.flow1 += dt * S.flow;
+      ph.flow2 += dt * S.flow * 0.62;
+    }
+  }
+
+  resize();
+
+  const idleYaw   = 0.16 * Math.sin(ph.t*0.21);
+  const idlePitch = 0.22 * Math.sin(ph.t*0.146 + 1.7);
+  const breathe   = 1.0 + 0.015 * Math.sin(ph.t*0.23);
+
+  gl.uniform2f(U.uRes, canvas.width, canvas.height);
+  gl.uniform1f(U.uYaw,   drag.yaw + idleYaw);
+  gl.uniform1f(U.uPitch, drag.pitch + idlePitch);
+  gl.uniform1f(U.uSpinPhase, ph.spin);
+  gl.uniform1f(U.uWob, ph.wob);
+  gl.uniform1f(U.uFlow1, ph.flow1);
+  gl.uniform1f(U.uFlow2, ph.flow2);
+  gl.uniform1f(U.uZoom, S.zoom * breathe);
+  gl.uniform1f(U.uTube, S.tube);
+  gl.uniform1f(U.uTaper, S.taper);
+  gl.uniform1f(U.uLobe, S.lobe);
+  gl.uniform1f(U.uWobAmp, S.wob);
+  gl.uniform1f(U.uInk, S.ink * 10.0);
+  gl.uniform1f(U.uSpreadPow, 26 - 23*S.spread);
+  gl.uniform1f(U.uBlob2, S.blob2);
+  gl.uniform3fv(U.uInkCol, hex2rgb(S.inkcol));
+  gl.uniform1f(U.uFrost, S.frost * 2.2);
+  gl.uniform1f(U.uGrain, S.grain);
+  gl.uniform3fv(U.uBg, [S.bg, S.bg*1.006, S.bg*1.012]);
+  gl.uniform1f(U.uSoft, S.soft);
+
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

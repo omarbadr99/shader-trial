@@ -1,4 +1,39 @@
-# Ink Bleed — scroll-degraded text
+# Shader trials
+
+## Trial 02 — Organic O, fluid ink ring
+
+`organic-o/index.html` — **open in a browser, no build, no dependencies
+(WebGL2).** A frosted-glass rounded-triangle ring with a dark indigo ink
+mass that flows around the tube while the shape wobbles and slowly spins.
+
+How it works — one full-screen fragment shader:
+
+1. **Geometry** — a raymarched torus SDF facing the camera, deformed per
+   ring-angle θ: a `cos 3θ` term makes the rounded triangle, low-harmonic
+   `cos 2θ / sin 4θ` waves (phase-animated) make it wobble in and out of
+   plane, and the tube radius tapers around the ring.
+2. **Ink** — an angular density field (two blobs orbiting at different
+   speeds) is integrated along the ray *through* the tube, then applied as
+   Beer–Lambert absorption in the hue-preserving form `T = inkColor^s`, so
+   dense ink goes indigo → near-black instead of graying out.
+3. **Frost** — thickness-based scattering mixes the transmitted background
+   toward milk white; the milk itself is stained by the ink behind it.
+4. **Finish** — soft top light, gentle fresnel rim, broad specular, film
+   grain, and silhouette pixels shaded at the ray's closest approach for a
+   soft-focus edge. All animation phases are integrated on the CPU so
+   moving a speed dial never makes the motion jump.
+
+Dials: flow speed, ink amount / spread / second blob / color, frost,
+thickness, taper, shape, wobble + speed, spin, zoom, softness, grain,
+background. Presets: **Reference / Calm / Deep ink / Ghost**. Drag to
+orbit; "ink follows cursor" makes the dark mass chase the pointer.
+
+`framer/OrganicO.tsx` is the same shader as a Framer code component —
+create a code file from it (same steps as InkBleed below), drop it on the
+page, and every dial appears as a native control, plus a transparent-
+background option.
+
+## Trial 01 — Ink Bleed, scroll-degraded text
 
 A live-text "ink bleed" effect: text near the bottom of the viewport dissolves
 into fat, distressed ink (bleed / photocopy / smear / spray), and pulls itself

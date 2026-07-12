@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Organic O — fluid ink ring shader</title>
+<title>Organic O — frosted shell, liquid blobs</title>
 <style>
   *{ box-sizing:border-box; margin:0; padding:0; }
   html,body{ height:100%; overflow:hidden; }
@@ -22,11 +22,11 @@
   }
   .corner small{ display:block; font-weight:500; letter-spacing:.04em; text-transform:none; opacity:.55; margin-top:3px; }
 
-  /* ---------- control panel (matches the ink-bleed trial) ---------- */
+  /* ---------- control panel ---------- */
   .panel{
     position:fixed; top:12px; right:12px; z-index:50;
-    width:250px; max-height:calc(100vh - 24px); overflow:auto;
-    background:rgba(252,251,248,.92);
+    width:258px; max-height:calc(100vh - 24px); overflow:auto;
+    background:rgba(252,251,248,.93);
     backdrop-filter:blur(6px);
     border:1.5px solid #111;
     font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -39,10 +39,14 @@
     padding:8px 10px;
     border-bottom:1.5px solid #111;
     font-weight:700; letter-spacing:.1em; cursor:pointer;
-    position:sticky; top:0; background:rgba(252,251,248,.97);
+    position:sticky; top:0; background:rgba(252,251,248,.97); z-index:2;
   }
   .panel-body{ padding:10px 12px 12px; display:grid; gap:9px; }
   .panel.closed .panel-body{ display:none; }
+  .sec{
+    font-weight:700; letter-spacing:.12em; font-size:10px; opacity:.6;
+    border-top:1px solid rgba(17,17,17,.25); padding-top:8px; margin-top:2px;
+  }
   .ctl{ display:grid; gap:3px; }
   .ctl label{ display:flex; justify-content:space-between; }
   .ctl label b{ font-weight:400; opacity:.55; }
@@ -56,15 +60,31 @@
   }
   .ctl input[type=range]::-moz-range-track{ height:2px; background:#111; }
   .ctl input[type=range]::-moz-range-thumb{ width:11px; height:11px; border:0; border-radius:50%; background:#111; }
-  .toggles{ display:flex; align-items:center; gap:6px; }
   .btnrow{ display:flex; gap:6px; flex-wrap:wrap; }
-  .btnrow button{
+  .btnrow button, .blob-add{
     font:inherit; background:none; border:1.5px solid #111; padding:3px 8px; cursor:pointer;
   }
-  .btnrow button:hover{ background:#111; color:#f2efe8; }
-  .ctl input[type=color]{
-    width:100%; height:22px; padding:0; border:1.5px solid #111; background:none; cursor:pointer;
+  .btnrow button:hover, .blob-add:hover{ background:#111; color:#f2efe8; }
+
+  /* ---------- blob rows ---------- */
+  .blob{
+    border:1px solid rgba(17,17,17,.4);
+    padding:7px 8px 8px; display:grid; gap:5px;
   }
+  .blob-top{ display:flex; align-items:center; gap:7px; }
+  .blob-top input[type=color]{
+    width:26px; height:20px; padding:0; border:1.5px solid #111; background:none; cursor:pointer; flex:none;
+  }
+  .blob-top .bname{ font-weight:700; letter-spacing:.06em; flex:1; }
+  .blob-top label{ display:flex; align-items:center; gap:4px; opacity:.8; cursor:pointer; }
+  .blob-top .bx{
+    border:0; background:none; font:inherit; font-weight:700; cursor:pointer; padding:0 2px; opacity:.6;
+  }
+  .blob-top .bx:hover{ opacity:1; }
+  .brow{ display:grid; grid-template-columns:52px 1fr 30px; align-items:center; gap:6px; }
+  .brow span{ opacity:.6; }
+  .brow output{ text-align:right; opacity:.55; }
+  .blob-add{ width:100%; }
   .hint{ opacity:.5; line-height:1.4; }
 </style>
 </head>
@@ -73,8 +93,8 @@
 <canvas id="gl"></canvas>
 
 <div class="corner">
-  Organic O — fluid ink ring
-  <small>drag to orbit · shader trial 02</small>
+  Organic O — frosted shell, liquid blobs
+  <small>drag to orbit · shader trial 02 v2</small>
 </div>
 
 <div class="panel" id="panel">
@@ -83,56 +103,61 @@
 
     <div class="btnrow" id="presets">
       <button data-p="reference">Reference</button>
-      <button data-p="calm">Calm</button>
-      <button data-p="deep">Deep ink</button>
+      <button data-p="lava">Lava</button>
       <button data-p="ghost">Ghost</button>
     </div>
 
-    <div class="ctl"><label>Flow speed <b id="v-flow"></b></label>
-      <input type="range" id="flow" min="-2" max="2" step="0.01"></div>
+    <div class="sec">BLOBS — the liquid inside</div>
+    <div id="blobList" style="display:grid; gap:7px;"></div>
+    <button class="blob-add" id="blobAdd">+ Add blob</button>
 
-    <div class="ctl toggles">
-      <input type="checkbox" id="follow"><label for="follow">Ink follows cursor</label>
-    </div>
-
-    <div class="ctl"><label>Ink amount <b id="v-ink"></b></label>
+    <div class="ctl"><label>Ink amount (all) <b id="v-ink"></b></label>
       <input type="range" id="ink" min="0" max="1" step="0.01"></div>
 
-    <div class="ctl"><label>Ink spread <b id="v-spread"></b></label>
-      <input type="range" id="spread" min="0" max="1" step="0.01"></div>
-
-    <div class="ctl"><label>Second blob <b id="v-blob2"></b></label>
-      <input type="range" id="blob2" min="0" max="1" step="0.01"></div>
-
-    <div class="ctl"><label>Ink color</label>
-      <input type="color" id="inkcol"></div>
-
-    <div class="ctl"><label>Frost <b id="v-frost"></b></label>
-      <input type="range" id="frost" min="0" max="1" step="0.01"></div>
-
-    <div class="ctl"><label>Thickness <b id="v-tube"></b></label>
-      <input type="range" id="tube" min="0.1" max="0.45" step="0.005"></div>
-
-    <div class="ctl"><label>Taper <b id="v-taper"></b></label>
-      <input type="range" id="taper" min="0" max="0.5" step="0.01"></div>
-
-    <div class="ctl"><label>Shape <b id="v-lobe"></b></label>
-      <input type="range" id="lobe" min="0" max="0.3" step="0.005"></div>
-
-    <div class="ctl"><label>Wobble <b id="v-wob"></b></label>
-      <input type="range" id="wob" min="0" max="1" step="0.01"></div>
-
-    <div class="ctl"><label>Wobble speed <b id="v-wobspd"></b></label>
-      <input type="range" id="wobspd" min="0" max="2" step="0.01"></div>
+    <div class="sec">MOTION — rigid, never noisy</div>
 
     <div class="ctl"><label>Spin <b id="v-spin"></b></label>
       <input type="range" id="spin" min="-1" max="1" step="0.01"></div>
 
+    <div class="ctl"><label>Tilt sway <b id="v-tilt"></b></label>
+      <input type="range" id="tilt" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Tilt speed <b id="v-tiltspd"></b></label>
+      <input type="range" id="tiltspd" min="0" max="2" step="0.01"></div>
+
+    <div class="ctl"><label>Organic drift <b id="v-organic"></b></label>
+      <input type="range" id="organic" min="0" max="1" step="0.01"></div>
+
+    <div class="sec">SHAPE</div>
+
+    <div class="ctl"><label>Tri-lobe <b id="v-lobe"></b></label>
+      <input type="range" id="lobe" min="0" max="0.25" step="0.005"></div>
+
+    <div class="ctl"><label>Thickness <b id="v-tube"></b></label>
+      <input type="range" id="tube" min="0.12" max="0.45" step="0.005"></div>
+
+    <div class="ctl"><label>Flatten <b id="v-flat"></b></label>
+      <input type="range" id="flat" min="0.5" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Taper <b id="v-taper"></b></label>
+      <input type="range" id="taper" min="0" max="0.4" step="0.01"></div>
+
     <div class="ctl"><label>Zoom <b id="v-zoom"></b></label>
       <input type="range" id="zoom" min="0.5" max="2" step="0.01"></div>
 
-    <div class="ctl"><label>Softness <b id="v-soft"></b></label>
-      <input type="range" id="soft" min="0.5" max="8" step="0.1"></div>
+    <div class="sec">SHELL — frosted Y2K plastic</div>
+
+    <div class="ctl"><label>Frost <b id="v-frost"></b></label>
+      <input type="range" id="frost" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Wall thickness <b id="v-wall"></b></label>
+      <input type="range" id="wall" min="0" max="0.45" step="0.01"></div>
+
+    <div class="ctl"><label>Speckle <b id="v-speckle"></b></label>
+      <input type="range" id="speckle" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Edge softness <b id="v-soft"></b></label>
+      <input type="range" id="soft" min="0.5" max="6" step="0.1"></div>
 
     <div class="ctl"><label>Grain <b id="v-grain"></b></label>
       <input type="range" id="grain" min="0" max="0.12" step="0.002"></div>
@@ -145,7 +170,9 @@
       <button id="reset">Reset view</button>
     </div>
 
-    <div class="hint">Raymarched SDF torus, ink = Beer–Lambert absorption integrated through the tube.</div>
+    <div class="hint">Shell = frosted polycarbonate with real wall thickness; blobs are liquid
+    masses confined to the core, each with its own color, speed, tail and lava drift.
+    Geometry moves rigidly (spin + precessing tilt) — no surface noise.</div>
   </div>
 </div>
 
@@ -159,6 +186,8 @@ const canvas = document.getElementById("gl");
 const gl = canvas.getContext("webgl2", { antialias:false, alpha:false });
 if (!gl) document.body.innerHTML = "<p style='padding:2em'>WebGL2 required.</p>";
 
+const MAXB = 6;
+
 const VERT = `#version 300 es
 void main(){
   vec2 v = vec2((gl_VertexID<<1)&2, gl_VertexID&2);
@@ -169,56 +198,85 @@ const FRAG = `#version 300 es
 precision highp float;
 out vec4 O;
 
+#define MAXB ${MAXB}
+#define PI  3.14159265
+#define TAU 6.28318531
+
 uniform vec2  uRes;
-uniform float uYaw, uPitch;      // orbit (drag + idle tumble), radians
-uniform float uSpinPhase;        // in-plane rotation of the shape, integrated on CPU
-uniform float uWob;              // wobble phase, integrated on CPU
-uniform float uFlow1, uFlow2;    // ink blob angular positions, integrated on CPU
+uniform float uYaw, uPitch;       // orbit: drag + precessing tilt (CPU)
+uniform float uSpinPhase;         // rigid in-plane rotation of the shape
+uniform float uOrgPhase;          // slow phase for the optional organic drift
 uniform float uZoom;
-uniform float uTube;             // tube radius
-uniform float uTaper;            // tube radius variation around the ring
-uniform float uLobe;             // tri-lobe (rounded triangle) amount
-uniform float uWobAmp;           // organic deformation amount
-uniform float uInk;              // absorption strength
-uniform float uSpreadPow;        // blob sharpness exponent (small = wide)
-uniform float uBlob2;            // weight of the second, slower blob
-uniform vec3  uInkCol;           // ink transmission color
-uniform float uFrost;            // milky scattering strength
+uniform float uTube;              // tube radius (in-plane)
+uniform float uFlat;              // cross-section z-scale (flattened coin < 1)
+uniform float uTaper;             // tube radius variation, rotates with shape
+uniform float uLobe;              // tri-lobe amplitude (constant = rigid form)
+uniform float uOrganic;           // small in-plane radius drift, default low
+uniform float uInk;               // global ink multiplier
+uniform float uFrost;             // shell scattering strength
+uniform float uWall;              // frosted wall thickness (fraction of tube radius)
+uniform float uSpeckle;           // micro speckle in the plastic
 uniform float uGrain;
 uniform vec3  uBg;
-uniform float uSoft;             // silhouette softness in pixels
+uniform float uSoft;              // silhouette AA in pixels
+uniform float uJitter;            // per-frame dither for the volume integral
 
-/* The ring lives in the xy-plane (axis = z) so it faces the camera
-   like an "O". theta is the angle around the ring. */
+uniform int   uBlobN;
+uniform vec4  uBlobA[MAXB];       // x angle, y half-width(rad), z tail(signed), w strength
+uniform vec3  uBlobAbs[MAXB];     // -log(color): per-channel absorption
+
+/* Ring in the xy-plane, facing camera. All angular modulation uses integer
+   harmonics of theta so the atan seam is invisible. */
+
+float ringR(float ths){
+  return 1.0
+    + uLobe * cos(3.0*ths + 0.9)
+    + uOrganic * (0.05*cos(2.0*ths - uOrgPhase) + 0.03*sin(4.0*ths + 0.7*uOrgPhase));
+}
+float tubeR(float ths){
+  return uTube * (1.0 + uTaper * cos(2.0*ths + 0.4));
+}
 
 float map(vec3 p){
   float th  = atan(p.y, p.x);
-  float ths = th - uSpinPhase;                 // shape-relative angle
-  float R = 1.0
-    + uLobe * cos(3.0*ths + 0.9)
-    + uWobAmp * (0.10*cos(2.0*ths - uWob) + 0.06*sin(4.0*ths + uWob*0.7));
-  float z = p.z + uWobAmp * 0.10 * sin(3.0*ths - uWob*1.31);
-  vec2 q = vec2(length(p.xy) - R, z);
-  float r = uTube * (1.0 + uTaper*cos(2.0*ths - uWob*0.6) + uLobe*0.5*sin(3.0*ths + 1.7));
-  return (length(q) - r) * 0.72;               // conservative step factor
+  float ths = th - uSpinPhase;
+  vec2 q = vec2(length(p.xy) - ringR(ths), p.z/uFlat);
+  return (length(q) - tubeR(ths)) * 0.62 * uFlat;
 }
 
 vec3 calcNormal(vec3 p){
-  const vec2 e = vec2(0.002, -0.002);
+  const vec2 e = vec2(0.0018, -0.0018);
   return normalize(
     e.xyy*map(p+e.xyy) + e.yyx*map(p+e.yyx) +
     e.yxy*map(p+e.yxy) + e.xxx*map(p+e.xxx));
 }
 
-/* ink density around the ring: one main blob + one slower counter-blob */
-float inkDen(vec3 p){
-  float th = atan(p.y, p.x);
-  float b1 = pow(0.5 + 0.5*cos(th - uFlow1), uSpreadPow);
-  float b2 = pow(0.5 + 0.5*cos(th - uFlow2), uSpreadPow*0.7);
-  return b1 + uBlob2*b2 + 0.02;                // small baseline = cool glass tint
-}
-
 float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+float hash3(vec3 p){ return fract(sin(dot(p, vec3(17.1,31.7,7.13)))*43758.5453); }
+
+/* per-channel optical depth of the liquid at a point + how "core" it is */
+vec3 inkOD(vec3 p, out float coreW){
+  float th  = atan(p.y, p.x);
+  float ths = th - uSpinPhase;
+  vec2 q = vec2(length(p.xy) - ringR(ths), p.z/uFlat);
+  float qn = length(q) / tubeR(ths);          // 0 at core .. 1 at surface
+  float core = 1.0 - uWall;                   // liquid lives inside the wall
+  coreW = smoothstep(core, core - 0.35, qn);
+
+  vec3 od = vec3(0.0);
+  for (int i=0; i<MAXB; i++){
+    if (i >= uBlobN) break;
+    vec4 B = uBlobA[i];
+    float d = mod(th - B.x + PI, TAU) - PI;   // wrapped angular distance
+    /* asymmetric gaussian: tail side (sign of B.z) is stretched;
+       faded out before the antipode so the tail closes without a seam */
+    float w = B.y * (d*B.z > 0.0 ? 1.0 + 2.2*abs(B.z) : 1.0);
+    float g = exp(-0.5*d*d/(w*w));
+    g *= 1.0 - smoothstep(0.7*PI, PI, abs(d));
+    od += uBlobAbs[i] * (B.w * g);
+  }
+  return od * coreW;
+}
 
 mat3 orbit(float yaw, float pitch){
   float cy=cos(yaw), sy=sin(yaw), cp=cos(pitch), sp=sin(pitch);
@@ -226,6 +284,7 @@ mat3 orbit(float yaw, float pitch){
   mat3 rx = mat3(1.,0.,0., 0.,cp,sp, 0.,-sp,cp);
   return ry*rx;
 }
+vec2 rot2(vec2 v, float a){ float c=cos(a), s=sin(a); return mat2(c,-s,s,c)*v; }
 
 void main(){
   vec2 uv = (gl_FragCoord.xy - 0.5*uRes) / uRes.y;
@@ -235,76 +294,94 @@ void main(){
   vec3 ro = M * vec3(0.0, 0.0, camD);
   vec3 rd = M * normalize(vec3(uv*0.62, -1.0));
 
-  /* march */
+  /* march with bisection refinement — tangent rays never shade inside */
   float t = max(0.0, camD - 2.6);
+  float tPrev = t;
   float minD = 1e9, tAt = t;
   bool hit = false;
-  for (int i=0; i<120; i++){
+  for (int i=0; i<140; i++){
     vec3 p = ro + rd*t;
     float d = map(p);
     if (d < minD){ minD = d; tAt = t; }
-    if (d < 0.0012){ hit = true; break; }
+    if (d < 0.001){
+      float a = tPrev, b = t;
+      for (int j=0; j<5; j++){
+        float m = 0.5*(a+b);
+        if (map(ro + rd*m) < 0.0005) b = m; else a = m;
+      }
+      t = b; hit = true; break;
+    }
+    tPrev = t;
     t += d;
     if (t > camD + 2.6) break;
   }
 
-  /* background: gentle vertical gradient + vignette + contact shadow */
-  float vig = length(uv)*0.55;
-  vec3 bg = uBg * (1.0 - 0.045*vig*vig) * (1.0 + 0.012*uv.y);
-  bg *= 1.0 - 0.05 * exp(-max(minD,0.0)*3.0);
+  /* background: flat, near-shadowless, slight vignette */
+  float vig = length(uv)*0.5;
+  vec3 bg = uBg * (1.0 - 0.04*vig*vig) * (1.0 + 0.008*uv.y);
+  bg *= 1.0 - 0.03 * exp(-max(minD, 0.0)*2.2);
 
-  /* silhouette coverage: shade at the closest-approach point on a near miss
-     so edges dissolve softly (the reference is shot soft-focus) */
-  float wpp = tAt * 1.24 / uRes.y;             // world units per pixel
+  float wpp = tAt * 1.24 / uRes.y;
   float aa  = uSoft * wpp;
   float alpha = hit ? 1.0 : clamp(1.0 - minD/aa, 0.0, 1.0);
 
   vec3 col = bg;
   if (alpha > 0.0){
-    float th0 = hit ? t : tAt;
-    vec3 p = ro + rd*th0;
+    float t0 = hit ? t : tAt;
+    vec3 p = ro + rd*t0;
     vec3 n = calcNormal(p);
 
-    /* integrate ink density + thickness through the tube */
-    float sigma = 0.0, thick = 0.0;
-    float ti = th0 + 0.004;
-    for (int i=0; i<28; i++){
-      vec3 q = ro + rd*ti;
-      float d = map(q);
-      if (d > 0.004) break;
-      float st = max(-d*1.1, 0.014);
-      sigma += inkDen(q) * st;
-      thick += st;
-      ti += st;
+    /* find exit point, then jittered uniform sampling — no banding */
+    float tExit = t0 + 0.004;
+    for (int i=0; i<48; i++){
+      float d = map(ro + rd*tExit);
+      if (d > 0.0015) break;
+      tExit += max(-d/(0.62*uFlat), 0.012);
+    }
+    float L = tExit - t0;
+    vec3 od = vec3(0.0);
+    float shellT = 0.0;
+    {
+      const int NS = 22;
+      float st = L/float(NS);
+      float j = hash(gl_FragCoord.xy + vec2(uJitter, uJitter*1.7));
+      for (int i=0; i<NS; i++){
+        vec3 q = ro + rd*(t0 + (float(i)+j)*st);
+        float coreW;
+        od += inkOD(q, coreW);
+        shellT += 1.0 - coreW;
+      }
+      od *= st;
+      shellT *= st;
     }
 
-    /* Beer-Lambert in the hue-preserving form T = inkColor^s, so the
-       ink stays indigo on its way to black instead of graying out */
-    vec3 inkC = clamp(uInkCol, vec3(0.02), vec3(1.0));
-    float s = sigma * uInk;
-    vec3 Tink = pow(inkC, vec3(s));
+    vec3 inkT = exp(-od * uInk);
 
-    /* frosted scattering: thin -> transparent, thick -> milk white,
-       and the milk itself is stained by the ink it sits behind */
-    float milk = 1.0 - exp(-thick * uFrost);
-    vec3 milkCol = vec3(0.955, 0.972, 0.99);
-    vec3 body = mix(bg * 1.02 * Tink, milkCol * pow(inkC, vec3(s*0.8)), milk);
+    /* frosted polycarbonate: scattering from total path + extra from the
+       wall, so grazing edges go milky-solid and the blob keeps a pale margin */
+    float milk = 1.0 - exp(-(L*uFrost*1.6 + shellT*uFrost*3.0));
+    vec3 milkCol = vec3(0.962, 0.973, 0.985);
 
-    /* soft top light + gentle fresnel rim + broad specular,
-       both dimmed where the ink is dense so the dark core stays dark */
-    float topLight = 0.5 + 0.5*n.y;
-    body *= 0.90 + 0.12*topLight;
-    float fres = pow(clamp(1.0 - dot(n, -rd), 0.0, 1.0), 3.0);
-    body += fres * vec3(0.10, 0.11, 0.13) * (0.3 + 0.7*milk) * (0.2 + 0.8*Tink);
-    vec3 ld = normalize(vec3(-0.45, 0.85, 0.55));
-    body += pow(max(dot(reflect(rd, n), ld), 0.0), 14.0) * 0.10 * (0.3 + 0.7*Tink);
+    /* molded-in micro speckle, fixed to the shape so it rotates with it */
+    vec3 ps = vec3(rot2(p.xy, -uSpinPhase), p.z);
+    float spk = (hash3(floor(ps*140.0)) - 0.5) * 0.055
+              + (hash3(floor(ps*47.0) + 7.0) - 0.5) * 0.03;
+
+    vec3 body = mix(bg * inkT, milkCol * exp(-od * uInk * 0.72), milk);
+    body *= 1.0 + spk * uSpeckle * milk;
+
+    /* flat ambient light: gentle top sheen + one tight plastic glint.
+       no fresnel rim, no additive edge lines */
+    float sheen = 0.5 + 0.5*n.y;
+    body *= 0.952 + 0.058*sheen;
+    vec3 ld = normalize(vec3(-0.35, 0.9, 0.6));
+    body += pow(max(dot(reflect(rd, n), ld), 0.0), 90.0) * 0.05;
 
     col = mix(bg, body, alpha);
   }
 
-  /* frosted grain (stronger on the body) */
   float g = hash(gl_FragCoord.xy) - 0.5;
-  col += g * uGrain * (0.3 + 0.7*alpha);
+  col += g * uGrain * (0.35 + 0.65*alpha);
 
   O = vec4(col, 1.0);
 }`;
@@ -324,54 +401,149 @@ if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
   throw new Error(gl.getProgramInfoLog(prog));
 gl.useProgram(prog);
 const U = {};
-["uRes","uYaw","uPitch","uSpinPhase","uWob","uFlow1","uFlow2","uZoom","uTube",
- "uTaper","uLobe","uWobAmp","uInk","uSpreadPow","uBlob2","uInkCol","uFrost",
- "uGrain","uBg","uSoft"].forEach(n => U[n] = gl.getUniformLocation(prog, n));
+["uRes","uYaw","uPitch","uSpinPhase","uOrgPhase","uZoom","uTube","uFlat","uTaper",
+ "uLobe","uOrganic","uInk","uFrost","uWall","uSpeckle","uGrain","uBg","uSoft",
+ "uJitter","uBlobN","uBlobA","uBlobAbs"].forEach(n => U[n] = gl.getUniformLocation(prog, n));
 
 /* ============================================================
-   State, dials, presets
+   State: global dials + blob list
 ============================================================ */
-const S = {};   // dial values
+const S = {};
+let blobs = [];
+let blobSeq = 0;
+
+function mkBlob(over){
+  return Object.assign({
+    id: ++blobSeq,
+    color: "#16233f",
+    size: 0.5,        // angular half-width, radians
+    speed: 0.3,       // rad/s, sign = direction
+    amt: 0.9,         // ink strength
+    tail: 0.5,        // trailing smear 0..1
+    drift: 0.5,       // lava-lamp speed oscillation 0..1.2 (can reverse)
+    follow: false,
+    angle: Math.random()*Math.PI*2,
+    dPh: Math.random()*Math.PI*2,
+    dFq: 0.35 + Math.random()*0.5,  // rad/s of the drift oscillation
+  }, over || {});
+}
+
 const PRESETS = {
-  reference: { flow:0.55, follow:false, ink:0.72, spread:0.42, blob2:0.3,
-               inkcol:"#1d2b47", frost:0.85, tube:0.30, taper:0.22, lobe:0.14,
-               wob:0.5, wobspd:0.55, spin:0.18, zoom:1.0, soft:3.0,
-               grain:0.035, bg:0.936 },
-  calm:      { flow:0.25, follow:false, ink:0.4, spread:0.75, blob2:0.25,
-               inkcol:"#2a3d5c", frost:0.75, tube:0.27, taper:0.12, lobe:0.10,
-               wob:0.25, wobspd:0.3, spin:0.1, zoom:1.0, soft:3.5,
-               grain:0.025, bg:0.945 },
-  deep:      { flow:0.8, follow:false, ink:0.95, spread:0.35, blob2:0.7,
-               inkcol:"#101b30", frost:0.5, tube:0.33, taper:0.3, lobe:0.16,
-               wob:0.7, wobspd:0.8, spin:0.3, zoom:1.05, soft:2.5,
-               grain:0.045, bg:0.93 },
-  ghost:     { flow:0.4, follow:false, ink:0.18, spread:0.85, blob2:0.2,
-               inkcol:"#3d5a80", frost:0.95, tube:0.26, taper:0.1, lobe:0.12,
-               wob:0.35, wobspd:0.4, spin:0.12, zoom:1.0, soft:5.0,
-               grain:0.02, bg:0.955 },
+  reference: {
+    dials: { ink:0.75, spin:0.2, tilt:0.5, tiltspd:1.0, organic:0.25,
+             lobe:0.13, tube:0.30, flat:0.72, taper:0.15, zoom:1.0,
+             frost:0.8, wall:0.22, speckle:0.5, soft:1.4, grain:0.035, bg:0.94 },
+    blobs: [
+      { color:"#101c33", size:0.55, speed:0.32,  amt:1.0,  tail:0.6, drift:0.45 },
+      { color:"#33507a", size:0.85, speed:-0.15, amt:0.4,  tail:0.5, drift:0.7 },
+    ],
+  },
+  lava: {
+    dials: { ink:0.8, spin:0.12, tilt:0.4, tiltspd:0.8, organic:0.35,
+             lobe:0.11, tube:0.34, flat:0.78, taper:0.1, zoom:1.0,
+             frost:0.9, wall:0.26, speckle:0.6, soft:1.6, grain:0.03, bg:0.945 },
+    blobs: [
+      { color:"#1c2f56", size:0.5,  speed:0.25,  amt:0.9, tail:0.55, drift:0.6 },
+      { color:"#7a3352", size:0.42, speed:-0.2,  amt:0.7, tail:0.5,  drift:0.8 },
+      { color:"#2e6660", size:0.6,  speed:0.14,  amt:0.5, tail:0.65, drift:1.0 },
+    ],
+  },
+  ghost: {
+    dials: { ink:0.4, spin:0.1, tilt:0.35, tiltspd:0.7, organic:0.15,
+             lobe:0.12, tube:0.28, flat:0.75, taper:0.1, zoom:1.0,
+             frost:1.0, wall:0.3, speckle:0.4, soft:2.2, grain:0.025, bg:0.95 },
+    blobs: [
+      { color:"#3d5a80", size:0.9, speed:0.22, amt:0.55, tail:0.5, drift:0.5 },
+    ],
+  },
 };
 
-const DIALS = ["flow","ink","spread","blob2","frost","tube","taper","lobe",
-               "wob","wobspd","spin","zoom","soft","grain","bg"];
+const DIALS = ["ink","spin","tilt","tiltspd","organic","lobe","tube","flat",
+               "taper","zoom","frost","wall","speckle","soft","grain","bg"];
 
-function hex2rgb(h){
-  return [1,3,5].map(i => parseInt(h.slice(i, i+2), 16) / 255);
+function hex2rgb(h){ return [1,3,5].map(i => parseInt(h.slice(i, i+2), 16)/255); }
+function absorb(hex){
+  return hex2rgb(hex).map(c => -Math.log(Math.min(1, Math.max(0.02, c))));
 }
 function fmt(v){ return (+v).toFixed(2); }
 
+/* ---------- blob UI ---------- */
+const blobList = document.getElementById("blobList");
+const BROWS = [
+  ["size",  "Size",  0.15, 1.4,  0.01],
+  ["speed", "Speed", -1,   1,    0.01],
+  ["amt",   "Ink",   0,    1.5,  0.01],
+  ["tail",  "Tail",  0,    1,    0.01],
+  ["drift", "Drift", 0,    1.2,  0.01],
+];
+
+function renderBlobs(){
+  blobList.innerHTML = "";
+  blobs.forEach((b, idx) => {
+    const box = document.createElement("div");
+    box.className = "blob";
+
+    const top = document.createElement("div");
+    top.className = "blob-top";
+    const colI = document.createElement("input");
+    colI.type = "color"; colI.value = b.color;
+    colI.addEventListener("input", () => { b.color = colI.value; });
+    const name = document.createElement("span");
+    name.className = "bname"; name.textContent = "BLOB " + (idx+1);
+    const fLab = document.createElement("label");
+    const fCb = document.createElement("input");
+    fCb.type = "checkbox"; fCb.checked = b.follow;
+    fCb.addEventListener("change", () => { b.follow = fCb.checked; });
+    fLab.append(fCb, document.createTextNode("cursor"));
+    const del = document.createElement("button");
+    del.className = "bx"; del.textContent = "×"; del.title = "Remove blob";
+    del.addEventListener("click", () => {
+      blobs = blobs.filter(x => x !== b); renderBlobs();
+    });
+    top.append(colI, name, fLab, del);
+    box.append(top);
+
+    for (const [key, label, min, max, step] of BROWS){
+      const row = document.createElement("div");
+      row.className = "brow";
+      const sp = document.createElement("span"); sp.textContent = label;
+      const r = document.createElement("input");
+      r.type = "range"; r.min = min; r.max = max; r.step = step; r.value = b[key];
+      const out = document.createElement("output"); out.textContent = fmt(b[key]);
+      r.addEventListener("input", () => { b[key] = +r.value; out.textContent = fmt(b[key]); });
+      row.append(sp, r, out);
+      box.append(row);
+    }
+    blobList.append(box);
+  });
+  document.getElementById("blobAdd").style.display = blobs.length >= MAXB ? "none" : "";
+}
+
+const ADD_COLORS = ["#16233f","#7a3352","#2e6660","#5c4a7a","#7a5c33","#33607a"];
+document.getElementById("blobAdd").addEventListener("click", () => {
+  if (blobs.length >= MAXB) return;
+  blobs.push(mkBlob({
+    color: ADD_COLORS[blobs.length % ADD_COLORS.length],
+    speed: (Math.random() < 0.5 ? -1 : 1) * (0.12 + Math.random()*0.3),
+    size: 0.35 + Math.random()*0.5,
+    amt: 0.5 + Math.random()*0.5,
+  }));
+  renderBlobs();
+});
+
+/* ---------- dial UI ---------- */
 function applyPreset(name){
   const p = PRESETS[name];
-  for (const k in p) S[k] = p[k];
+  Object.assign(S, p.dials);
   for (const id of DIALS){
     const el = document.getElementById(id);
     el.value = S[id];
     const lbl = document.getElementById("v-"+id);
     if (lbl) lbl.textContent = fmt(S[id]);
   }
-  document.getElementById("inkcol").value = S.inkcol;
-  document.getElementById("follow").checked = S.follow;
+  blobs = p.blobs.map(b => mkBlob(Object.assign({}, b)));
+  renderBlobs();
 }
-
 for (const id of DIALS){
   document.getElementById(id).addEventListener("input", e => {
     S[id] = +e.target.value;
@@ -379,8 +551,6 @@ for (const id of DIALS){
     if (lbl) lbl.textContent = fmt(S[id]);
   });
 }
-document.getElementById("inkcol").addEventListener("input", e => S.inkcol = e.target.value);
-document.getElementById("follow").addEventListener("change", e => S.follow = e.target.checked);
 document.getElementById("presets").addEventListener("click", e => {
   const b = e.target.closest("button"); if (b) applyPreset(b.dataset.p);
 });
@@ -403,7 +573,7 @@ document.getElementById("panelHead").addEventListener("click", () => {
 applyPreset("reference");
 
 /* ============================================================
-   Pointer: drag = orbit, cursor angle can drive the ink
+   Pointer: drag = orbit; cursor angle can drive blobs marked "cursor"
 ============================================================ */
 const drag = { on:false, x:0, y:0, yaw:0, pitch:0 };
 const cursor = { angle:0, has:false };
@@ -426,11 +596,16 @@ canvas.addEventListener("pointermove", e => {
 addEventListener("pointerup", () => { drag.on = false; canvas.classList.remove("dragging"); });
 
 /* ============================================================
-   Render loop — phases integrated on CPU so speed dials
-   never make the animation jump
+   Render loop.
+   Motion rules (from the reference):
+   - the tri-lobe profile is constant; the shape only rotates rigidly
+   - the ring plane tilts on two sinusoids with non-matching periods,
+     so the sway precesses and never repeats the same path
+   - blobs circulate on their own clocks, independent of the shape
 ============================================================ */
-const ph = { flow1: 2.1, flow2: 4.8, wob: 0, spin: 0, t: 0 };
+const ph = { t: 0, spin: 0, org: 0 };
 let last = performance.now();
+let frameN = 0;
 
 function shortestArc(a, b){
   let d = (b - a) % (Math.PI*2);
@@ -448,49 +623,69 @@ function resize(){
   }
 }
 
+const blobA   = new Float32Array(MAXB*4);
+const blobAbs = new Float32Array(MAXB*3);
+
 function frame(now){
   const dt = Math.min((now - last)/1000, 0.05);
-  last = now;
+  last = now; frameN++;
 
   if (!paused){
-    ph.t += dt;
-    ph.wob  += dt * S.wobspd * 1.1;
+    ph.t    += dt;
     ph.spin += dt * S.spin * 0.35;
-    if (S.follow && cursor.has){
-      ph.flow1 += shortestArc(ph.flow1, cursor.angle) * Math.min(1, dt*4);
-      ph.flow2 += shortestArc(ph.flow2, cursor.angle + Math.PI*0.7) * Math.min(1, dt*2.5);
-    } else {
-      ph.flow1 += dt * S.flow;
-      ph.flow2 += dt * S.flow * 0.62;
+    ph.org  += dt * 0.5;
+    for (const b of blobs){
+      if (b.follow && cursor.has){
+        b.angle += shortestArc(b.angle, cursor.angle) * Math.min(1, dt*4);
+      } else {
+        /* lava-lamp drift: speed breathes, can briefly reverse at high drift */
+        const mod = 1 + b.drift * Math.sin(ph.t*b.dFq + b.dPh);
+        b.angle += dt * b.speed * mod;
+      }
     }
   }
 
   resize();
 
-  const idleYaw   = 0.16 * Math.sin(ph.t*0.21);
-  const idlePitch = 0.22 * Math.sin(ph.t*0.146 + 1.7);
-  const breathe   = 1.0 + 0.015 * Math.sin(ph.t*0.23);
+  /* precessing tilt: two incommensurate frequencies */
+  const tiltYaw   = S.tilt * 0.55 * Math.sin(ph.t * 0.31 * S.tiltspd);
+  const tiltPitch = S.tilt * 0.42 * Math.sin(ph.t * 0.203 * S.tiltspd + 1.3);
+  const breathe   = 1.0 + 0.015 * Math.sin(ph.t*0.19);
+
+  const n = Math.min(blobs.length, MAXB);
+  for (let i=0; i<n; i++){
+    const b = blobs[i];
+    blobA[i*4]   = b.angle;
+    blobA[i*4+1] = b.size;
+    /* tail trails opposite the direction of travel */
+    blobA[i*4+2] = b.tail * (b.speed >= 0 ? -1 : 1) * (b.follow ? 0.3 : 1);
+    blobA[i*4+3] = b.amt;
+    const A = absorb(b.color);
+    blobAbs[i*3] = A[0]; blobAbs[i*3+1] = A[1]; blobAbs[i*3+2] = A[2];
+  }
 
   gl.uniform2f(U.uRes, canvas.width, canvas.height);
-  gl.uniform1f(U.uYaw,   drag.yaw + idleYaw);
-  gl.uniform1f(U.uPitch, drag.pitch + idlePitch);
+  gl.uniform1f(U.uYaw,   drag.yaw + tiltYaw);
+  gl.uniform1f(U.uPitch, drag.pitch + tiltPitch);
   gl.uniform1f(U.uSpinPhase, ph.spin);
-  gl.uniform1f(U.uWob, ph.wob);
-  gl.uniform1f(U.uFlow1, ph.flow1);
-  gl.uniform1f(U.uFlow2, ph.flow2);
+  gl.uniform1f(U.uOrgPhase, ph.org);
   gl.uniform1f(U.uZoom, S.zoom * breathe);
   gl.uniform1f(U.uTube, S.tube);
+  gl.uniform1f(U.uFlat, S.flat);
   gl.uniform1f(U.uTaper, S.taper);
   gl.uniform1f(U.uLobe, S.lobe);
-  gl.uniform1f(U.uWobAmp, S.wob);
-  gl.uniform1f(U.uInk, S.ink * 10.0);
-  gl.uniform1f(U.uSpreadPow, 26 - 23*S.spread);
-  gl.uniform1f(U.uBlob2, S.blob2);
-  gl.uniform3fv(U.uInkCol, hex2rgb(S.inkcol));
-  gl.uniform1f(U.uFrost, S.frost * 2.2);
+  gl.uniform1f(U.uOrganic, S.organic);
+  gl.uniform1f(U.uInk, S.ink * 8.0);
+  gl.uniform1f(U.uFrost, S.frost * 2.0);
+  gl.uniform1f(U.uWall, S.wall);
+  gl.uniform1f(U.uSpeckle, S.speckle);
   gl.uniform1f(U.uGrain, S.grain);
-  gl.uniform3fv(U.uBg, [S.bg, S.bg*1.006, S.bg*1.012]);
+  gl.uniform3fv(U.uBg, [S.bg*1.002, S.bg, S.bg*0.998]);
   gl.uniform1f(U.uSoft, S.soft);
+  gl.uniform1f(U.uJitter, (frameN % 64) * 0.618);
+  gl.uniform1i(U.uBlobN, n);
+  gl.uniform4fv(U.uBlobA, blobA);
+  gl.uniform3fv(U.uBlobAbs, blobAbs);
 
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   requestAnimationFrame(frame);

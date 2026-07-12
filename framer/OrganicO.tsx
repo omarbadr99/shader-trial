@@ -33,6 +33,7 @@ uniform float uYaw, uPitch;       // orbit: drag + precessing tilt (CPU)
 uniform float uSpinPhase;         // rigid in-plane rotation of the shape
 uniform float uOrgPhase;          // slow phase for the optional organic drift
 uniform float uZoom;
+uniform float uRing;              // ring radius — hole size, tube stays absolute
 uniform float uTube;              // tube radius (in-plane)
 uniform float uFlat;              // cross-section z-scale (flattened coin < 1)
 uniform float uTaper;             // tube radius variation, rotates with shape
@@ -59,9 +60,9 @@ uniform vec3  uBlobAbs[MAXB];     // -log(color): per-channel absorption
    harmonics of theta so the atan seam is invisible. */
 
 float ringR(float ths){
-  return 1.0
+  return uRing * (1.0
     + uLobe * cos(3.0*ths + 0.9)
-    + uOrganic * (0.05*cos(2.0*ths - uOrgPhase) + 0.03*sin(4.0*ths + 0.7*uOrgPhase));
+    + uOrganic * (0.05*cos(2.0*ths - uOrgPhase) + 0.03*sin(4.0*ths + 0.7*uOrgPhase)));
 }
 float tubeR(float ths){
   /* one-sided taper: thick on one side of the ring, slim opposite */
@@ -69,7 +70,7 @@ float tubeR(float ths){
 }
 
 float zWave(float ths){
-  return uOrganic * 0.07 * sin(3.0*ths - uOrgPhase*1.3);
+  return uOrganic * 0.07 * uRing * sin(3.0*ths - uOrgPhase*1.3);
 }
 
 float map(vec3 p){
@@ -256,7 +257,7 @@ void main(){
 
 const UNIFORMS = [
     "uRes", "uYaw", "uPitch", "uSpinPhase", "uOrgPhase", "uZoom", "uTube",
-    "uFlat", "uTaper", "uLobe", "uOrganic", "uInk", "uGravity", "uLight",
+    "uRing", "uFlat", "uTaper", "uLobe", "uOrganic", "uInk", "uGravity", "uLight",
     "uGlare", "uFrost", "uWall",
     "uSpeckle", "uGrain", "uBg", "uSoft", "uJitter", "uTransparent",
     "uBlobN", "uBlobA", "uBlobAbs",
@@ -304,6 +305,7 @@ interface Props {
     tiltSpeed: number
     organicDrift: number
     wobbleSpeed: number
+    ringSize: number
     triLobe: number
     thickness: number
     flatten: number
@@ -449,6 +451,7 @@ export default function OrganicO(props: Props) {
             gl.uniform1f(U.uSpinPhase, ph.spin)
             gl.uniform1f(U.uOrgPhase, ph.org)
             gl.uniform1f(U.uZoom, P.zoom * breathe)
+            gl.uniform1f(U.uRing, P.ringSize)
             gl.uniform1f(U.uTube, P.thickness)
             gl.uniform1f(U.uFlat, P.flatten)
             gl.uniform1f(U.uTaper, P.taper)
@@ -505,6 +508,7 @@ OrganicO.defaultProps = {
     tiltSpeed: 1,
     organicDrift: 0.25,
     wobbleSpeed: 0.5,
+    ringSize: 1,
     triLobe: 0.13,
     thickness: 0.21,
     flatten: 0.72,
@@ -550,6 +554,7 @@ addPropertyControls(OrganicO, {
     tiltSpeed: { type: ControlType.Number, title: "Tilt speed", min: 0, max: 2, step: 0.01 },
     organicDrift: { type: ControlType.Number, title: "Wobble", min: 0, max: 1, step: 0.01 },
     wobbleSpeed: { type: ControlType.Number, title: "Wobble speed", min: 0, max: 2, step: 0.01 },
+    ringSize: { type: ControlType.Number, title: "Ring size", min: 0.35, max: 1.35, step: 0.01 },
     triLobe: { type: ControlType.Number, title: "Tri-lobe", min: 0, max: 0.25, step: 0.005 },
     thickness: { type: ControlType.Number, title: "Thickness", min: 0.12, max: 0.45, step: 0.005 },
     flatten: { type: ControlType.Number, title: "Flatten", min: 0.5, max: 1, step: 0.01 },

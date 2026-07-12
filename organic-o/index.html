@@ -148,6 +148,9 @@
 
     <div class="sec">SHAPE</div>
 
+    <div class="ctl"><label>Ring size <b id="v-ring"></b></label>
+      <input type="range" id="ring" min="0.35" max="1.35" step="0.01"></div>
+
     <div class="ctl"><label>Tri-lobe <b id="v-lobe"></b></label>
       <input type="range" id="lobe" min="0" max="0.25" step="0.005"></div>
 
@@ -225,6 +228,7 @@ uniform float uYaw, uPitch;       // orbit: drag + precessing tilt (CPU)
 uniform float uSpinPhase;         // rigid in-plane rotation of the shape
 uniform float uOrgPhase;          // slow phase for the optional organic drift
 uniform float uZoom;
+uniform float uRing;              // ring radius — hole size, tube stays absolute
 uniform float uTube;              // tube radius (in-plane)
 uniform float uFlat;              // cross-section z-scale (flattened coin < 1)
 uniform float uTaper;             // tube radius variation, rotates with shape
@@ -250,9 +254,9 @@ uniform vec3  uBlobAbs[MAXB];     // -log(color): per-channel absorption
    harmonics of theta so the atan seam is invisible. */
 
 float ringR(float ths){
-  return 1.0
+  return uRing * (1.0
     + uLobe * cos(3.0*ths + 0.9)
-    + uOrganic * (0.05*cos(2.0*ths - uOrgPhase) + 0.03*sin(4.0*ths + 0.7*uOrgPhase));
+    + uOrganic * (0.05*cos(2.0*ths - uOrgPhase) + 0.03*sin(4.0*ths + 0.7*uOrgPhase)));
 }
 float tubeR(float ths){
   /* one-sided taper: thick on one side of the ring, slim opposite */
@@ -260,7 +264,7 @@ float tubeR(float ths){
 }
 
 float zWave(float ths){
-  return uOrganic * 0.07 * sin(3.0*ths - uOrgPhase*1.3);
+  return uOrganic * 0.07 * uRing * sin(3.0*ths - uOrgPhase*1.3);
 }
 
 float map(vec3 p){
@@ -461,7 +465,7 @@ gl.useProgram(prog);
 const U = {};
 ["uRes","uYaw","uPitch","uSpinPhase","uOrgPhase","uZoom","uTube","uFlat","uTaper",
  "uLobe","uOrganic","uInk","uGravity","uLight","uGlare","uFrost","uWall","uSpeckle",
- "uGrain","uBg","uSoft","uJitter","uBlobN","uBlobA","uBlobAbs"]
+ "uGrain","uBg","uSoft","uRing","uJitter","uBlobN","uBlobA","uBlobAbs"]
  .forEach(n => U[n] = gl.getUniformLocation(prog, n));
 
 /* ============================================================
@@ -491,7 +495,7 @@ const PRESETS = {
   reference: {
     dials: { ink:0.9, gravity:0.8, light:0.7, glare:0.65,
              spin:0.2, tilt:0.5, tiltspd:1.0, wob:0.25, wobspd:0.5,
-             lobe:0.13, tube:0.21, flat:0.72, taper:0.22, zoom:1.18,
+             ring:1.0, lobe:0.13, tube:0.21, flat:0.72, taper:0.22, zoom:1.18,
              frost:0.45, wall:0.22, speckle:0.4, soft:1.4, grain:0.035, bg:0.94 },
     blobs: [
       { color:"#101c33", size:0.55, speed:0.32,  amt:1.0,  tail:0.6, drift:0.45 },
@@ -501,7 +505,7 @@ const PRESETS = {
   lava: {
     dials: { ink:0.8, gravity:0.55, light:0.6, glare:0.55,
              spin:0.12, tilt:0.4, tiltspd:0.8, wob:0.35, wobspd:0.8,
-             lobe:0.11, tube:0.34, flat:0.78, taper:0.1, zoom:1.0,
+             ring:1.0, lobe:0.11, tube:0.34, flat:0.78, taper:0.1, zoom:1.0,
              frost:0.9, wall:0.26, speckle:0.6, soft:1.6, grain:0.03, bg:0.945 },
     blobs: [
       { color:"#1c2f56", size:0.5,  speed:0.25,  amt:0.9, tail:0.55, drift:0.6 },
@@ -512,7 +516,7 @@ const PRESETS = {
   ghost: {
     dials: { ink:0.4, gravity:0.45, light:0.5, glare:0.4,
              spin:0.1, tilt:0.35, tiltspd:0.7, wob:0.15, wobspd:0.5,
-             lobe:0.12, tube:0.28, flat:0.75, taper:0.1, zoom:1.0,
+             ring:1.0, lobe:0.12, tube:0.28, flat:0.75, taper:0.1, zoom:1.0,
              frost:1.0, wall:0.3, speckle:0.4, soft:2.2, grain:0.025, bg:0.95 },
     blobs: [
       { color:"#3d5a80", size:0.9, speed:0.22, amt:0.55, tail:0.5, drift:0.5 },
@@ -521,8 +525,8 @@ const PRESETS = {
 };
 
 const DIALS = ["ink","gravity","light","glare","spin","tilt","tiltspd","wob",
-               "wobspd","lobe","tube","flat","taper","zoom","frost","wall",
-               "speckle","soft","grain","bg"];
+               "wobspd","ring","lobe","tube","flat","taper","zoom","frost",
+               "wall","speckle","soft","grain","bg"];
 
 function hex2rgb(h){ return [1,3,5].map(i => parseInt(h.slice(i, i+2), 16)/255); }
 function absorb(hex){
@@ -795,6 +799,7 @@ function frame(now){
   gl.uniform1f(U.uSpinPhase, ph.spin);
   gl.uniform1f(U.uOrgPhase, ph.org);
   gl.uniform1f(U.uZoom, S.zoom * breathe);
+  gl.uniform1f(U.uRing, S.ring);
   gl.uniform1f(U.uTube, S.tube);
   gl.uniform1f(U.uFlat, S.flat);
   gl.uniform1f(U.uTaper, S.taper);

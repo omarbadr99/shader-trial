@@ -29,27 +29,34 @@ out vec4 O;
 #define TAU 6.28318531
 
 uniform vec2  uRes;
-uniform float uYaw, uPitch;
-uniform float uSpinPhase;
-uniform float uOrgPhase;
+uniform float uYaw, uPitch;       // orbit: drag + precessing tilt (CPU)
+uniform float uSpinPhase;         // rigid in-plane rotation of the shape
+uniform float uOrgPhase;          // slow phase for the optional organic drift
 uniform float uZoom;
-uniform float uTube;
-uniform float uFlat;
-uniform float uTaper;
-uniform float uLobe;
-uniform float uOrganic;
-uniform float uInk;
-uniform float uFrost;
-uniform float uWall;
-uniform float uSpeckle;
+uniform float uTube;              // tube radius (in-plane)
+uniform float uFlat;              // cross-section z-scale (flattened coin < 1)
+uniform float uTaper;             // tube radius variation, rotates with shape
+uniform float uLobe;              // tri-lobe amplitude (constant = rigid form)
+uniform float uOrganic;           // small in-plane radius drift, default low
+uniform float uInk;               // global ink multiplier
+uniform float uGravity;           // ink pull toward the ring's center
+uniform float uLight;             // form-light strength (3D read)
+uniform float uGlare;             // area-light glare strength
+uniform float uFrost;             // shell scattering strength
+uniform float uWall;              // frosted wall thickness (fraction of tube radius)
+uniform float uSpeckle;           // micro speckle in the plastic
 uniform float uGrain;
 uniform vec3  uBg;
-uniform float uSoft;
-uniform float uJitter;
-uniform float uTransparent;
+uniform float uSoft;              // silhouette AA in pixels
+uniform float uJitter;        // per-frame dither for the volume integral
+uniform float uTransparent;   // 1 = emit alpha, background pixels transparent
+
 uniform int   uBlobN;
-uniform vec4  uBlobA[MAXB];
-uniform vec3  uBlobAbs[MAXB];
+uniform vec4  uBlobA[MAXB];       // x angle, y half-width(rad), z tail(signed), w strength
+uniform vec3  uBlobAbs[MAXB];     // -log(color): per-channel absorption
+
+/* Ring in the xy-plane, facing camera. All angular modulation uses integer
+   harmonics of theta so the atan seam is invisible. */
 
 float ringR(float ths){
   return 1.0
@@ -57,7 +64,8 @@ float ringR(float ths){
     + uOrganic * (0.05*cos(2.0*ths - uOrgPhase) + 0.03*sin(4.0*ths + 0.7*uOrgPhase));
 }
 float tubeR(float ths){
-  return uTube * (1.0 + uTaper * cos(2.0*ths + 0.4));
+  /* one-sided taper: thick on one side of the ring, slim opposite */
+  return uTube * (1.0 + uTaper * cos(ths + 0.4));
 }
 
 float map(vec3 p){
@@ -77,25 +85,42 @@ vec3 calcNormal(vec3 p){
 float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
 float hash3(vec3 p){ return fract(sin(dot(p, vec3(17.1,31.7,7.13)))*43758.5453); }
 
+/* per-channel optical depth of the liquid at a point + how "core" it is */
 vec3 inkOD(vec3 p, out float coreW){
   float th  = atan(p.y, p.x);
   float ths = th - uSpinPhase;
   vec2 q = vec2(length(p.xy) - ringR(ths), p.z/uFlat);
-  float qn = length(q) / tubeR(ths);
-  float core = 1.0 - uWall;
+  float r  = tubeR(ths);
+  float qn = length(q) / r;                   // 0 at core .. 1 at surface
+  float core = 1.0 - uWall;                   // liquid lives inside the wall
   coreW = smoothstep(core, core - 0.35, qn);
 
   vec3 od = vec3(0.0);
+  float dens = 0.0;
   for (int i=0; i<MAXB; i++){
     if (i >= uBlobN) break;
     vec4 B = uBlobA[i];
-    float d = mod(th - B.x + PI, TAU) - PI;
+    float d = mod(th - B.x + PI, TAU) - PI;   // wrapped angular distance
+    /* asymmetric gaussian: tail side (sign of B.z) is stretched;
+       faded out before the antipode so the tail closes without a seam */
     float w = B.y * (d*B.z > 0.0 ? 1.0 + 2.2*abs(B.z) : 1.0);
     float g = exp(-0.5*d*d/(w*w));
     g *= 1.0 - smoothstep(0.7*PI, PI, abs(d));
     od += uBlobAbs[i] * (B.w * g);
+    dens += B.w * g;
   }
-  return od * coreW;
+
+  /* ink gravity: the liquid is pulled toward the ring's center — tails and
+     thin washes pack against the inner wall, but where a blob is dense it
+     floods the whole tube width, like the reference */
+  float rad   = clamp(q.x / r, -1.0, 1.0);    // -1 inner edge .. +1 outer edge
+  float gravW = smoothstep(0.85, -0.55, rad);
+  float flood = smoothstep(0.35, 1.1, dens);
+  coreW *= mix(1.0, mix(gravW, 1.0, flood), uGravity);
+
+  /* baseline cool tint of the material itself — fills the whole tube
+     (wall included), so long grazing paths pick up a darker cold edge */
+  return od * coreW + vec3(0.040, 0.027, 0.014);
 }
 
 mat3 orbit(float yaw, float pitch){
@@ -114,6 +139,7 @@ void main(){
   vec3 ro = M * vec3(0.0, 0.0, camD);
   vec3 rd = M * normalize(vec3(uv*0.62, -1.0));
 
+  /* march with bisection refinement — tangent rays never shade inside */
   float t = max(0.0, camD - 2.6);
   float tPrev = t;
   float minD = 1e9, tAt = t;
@@ -135,9 +161,12 @@ void main(){
     if (t > camD + 2.6) break;
   }
 
+  /* background: slight vignette + a soft shadow that pools below the
+     object (key light comes from above) */
   float vig = length(uv)*0.5;
   vec3 bg = uBg * (1.0 - 0.04*vig*vig) * (1.0 + 0.008*uv.y);
-  bg *= 1.0 - 0.03 * exp(-max(minD, 0.0)*2.2);
+  float below = smoothstep(0.15, -0.45, uv.y);
+  bg *= 1.0 - (0.018 + 0.05*below*uLight) * exp(-max(minD, 0.0)*2.2);
 
   float wpp = tAt * 1.24 / min(uRes.x, uRes.y);
   float aa  = uSoft * wpp;
@@ -149,6 +178,7 @@ void main(){
     vec3 p = ro + rd*t0;
     vec3 n = calcNormal(p);
 
+    /* find exit point, then jittered uniform sampling — no banding */
     float tExit = t0 + 0.004;
     for (int i=0; i<48; i++){
       float d = map(ro + rd*tExit);
@@ -173,9 +203,13 @@ void main(){
     }
 
     vec3 inkT = exp(-od * uInk);
-    float milk = 1.0 - exp(-(L*uFrost*1.6 + shellT*uFrost*3.0));
-    vec3 milkCol = vec3(0.962, 0.973, 0.985);
 
+    /* frosted polycarbonate: scattering from total path + extra from the
+       wall, so grazing edges go milky-solid and the blob keeps a pale margin */
+    float milk = 1.0 - exp(-(L*uFrost*1.6 + shellT*uFrost*3.0));
+    vec3 milkCol = vec3(0.985, 0.992, 1.0);
+
+    /* molded-in micro speckle, fixed to the shape so it rotates with it */
     vec3 ps = vec3(rot2(p.xy, -uSpinPhase), p.z);
     float spk = (hash3(floor(ps*140.0)) - 0.5) * 0.055
               + (hash3(floor(ps*47.0) + 7.0) - 0.5) * 0.03;
@@ -183,10 +217,28 @@ void main(){
     vec3 body = mix(bg * inkT, milkCol * exp(-od * uInk * 0.72), milk);
     body *= 1.0 + spk * uSpeckle * milk;
 
-    float sheen = 0.5 + 0.5*n.y;
-    body *= 0.952 + 0.058*sheen;
-    vec3 ld = normalize(vec3(-0.35, 0.9, 0.6));
-    body += pow(max(dot(reflect(rd, n), ld), 0.0), 90.0) * 0.05;
+    /* studio light rig: one big soft key above-front. wrap diffuse keeps
+       the shadow side alive, an extra term deepens the core shadow so the
+       tube reads round */
+    vec3 ld = normalize(vec3(-0.25, 0.85, 0.5));
+    float ndl = dot(n, ld);
+    float shade = 0.36 * uLight;
+    float diff = (1.0 - shade) + shade*ndl;
+    diff *= 1.0 - 0.15*uLight*smoothstep(0.0, -0.8, ndl);
+    body *= diff;
+
+    /* faint bounce up from the backdrop */
+    body += vec3(0.018, 0.020, 0.022)
+          * clamp(dot(n, normalize(vec3(0.0, -0.75, 0.65))), 0.0, 1.0)
+          * milk * uLight;
+
+    /* hazy elongated glare + soft sheen — a big area light reflected in a
+       frosted surface, riding the tube's top ridge; survives over ink */
+    vec3 rfl = reflect(rd, n);
+    float gA = pow(max(dot(rfl, ld), 0.0), 6.0);
+    float gB = pow(max(dot(rfl, ld), 0.0), 36.0);
+    body += (gA*0.16 + gB*0.11) * uGlare * (0.3 + 0.7*milk)
+          * mix(vec3(1.0), inkT, 0.3);
 
     col = mix(bg, body, alpha);
   }
@@ -200,7 +252,8 @@ void main(){
 
 const UNIFORMS = [
     "uRes", "uYaw", "uPitch", "uSpinPhase", "uOrgPhase", "uZoom", "uTube",
-    "uFlat", "uTaper", "uLobe", "uOrganic", "uInk", "uFrost", "uWall",
+    "uFlat", "uTaper", "uLobe", "uOrganic", "uInk", "uGravity", "uLight",
+    "uGlare", "uFrost", "uWall",
     "uSpeckle", "uGrain", "uBg", "uSoft", "uJitter", "uTransparent",
     "uBlobN", "uBlobA", "uBlobAbs",
 ]
@@ -239,6 +292,9 @@ interface Blob {
 interface Props {
     blobs: Blob[]
     inkAmount: number
+    inkGravity: number
+    formLight: number
+    glare: number
     spin: number
     tiltSway: number
     tiltSpeed: number
@@ -394,6 +450,9 @@ export default function OrganicO(props: Props) {
             gl.uniform1f(U.uLobe, P.triLobe)
             gl.uniform1f(U.uOrganic, P.organicDrift)
             gl.uniform1f(U.uInk, P.inkAmount * 8)
+            gl.uniform1f(U.uGravity, P.inkGravity)
+            gl.uniform1f(U.uLight, P.formLight)
+            gl.uniform1f(U.uGlare, P.glare)
             gl.uniform1f(U.uFrost, P.frost * 2)
             gl.uniform1f(U.uWall, P.wallThickness)
             gl.uniform1f(U.uSpeckle, P.speckle)
@@ -432,17 +491,20 @@ OrganicO.defaultProps = {
         { color: "#101C33", size: 0.55, speed: 0.32, ink: 1, tail: 0.6, drift: 0.45, follow: false },
         { color: "#33507A", size: 0.85, speed: -0.15, ink: 0.4, tail: 0.5, drift: 0.7, follow: false },
     ],
-    inkAmount: 0.75,
+    inkAmount: 0.9,
+    inkGravity: 0.8,
+    formLight: 0.7,
+    glare: 0.65,
     spin: 0.2,
     tiltSway: 0.5,
     tiltSpeed: 1,
     organicDrift: 0.25,
     triLobe: 0.13,
-    thickness: 0.3,
+    thickness: 0.21,
     flatten: 0.72,
-    taper: 0.15,
-    zoom: 1,
-    frost: 0.8,
+    taper: 0.22,
+    zoom: 1.18,
+    frost: 0.45,
     wallThickness: 0.22,
     speckle: 0.5,
     softness: 1.4,
@@ -474,6 +536,9 @@ addPropertyControls(OrganicO, {
         ],
     },
     inkAmount: { type: ControlType.Number, title: "Ink amount", min: 0, max: 1, step: 0.01 },
+    inkGravity: { type: ControlType.Number, title: "Ink gravity", min: 0, max: 1, step: 0.01 },
+    formLight: { type: ControlType.Number, title: "Form light", min: 0, max: 1, step: 0.01 },
+    glare: { type: ControlType.Number, title: "Glare", min: 0, max: 1, step: 0.01 },
     spin: { type: ControlType.Number, title: "Spin", min: -1, max: 1, step: 0.01 },
     tiltSway: { type: ControlType.Number, title: "Tilt sway", min: 0, max: 1, step: 0.01 },
     tiltSpeed: { type: ControlType.Number, title: "Tilt speed", min: 0, max: 2, step: 0.01 },

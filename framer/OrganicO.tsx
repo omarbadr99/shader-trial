@@ -60,13 +60,12 @@ uniform vec3  uBlobAbs[MAXB];     // -log(color): per-channel absorption
    harmonics of theta so the atan seam is invisible. */
 
 float ringR(float ths){
-  /* three localized corner bumps (mean-centered) instead of a cos wave:
-     the O grows soft vertices without denting inward between them */
+  /* STRICTLY circle <-> rounded triangle. One 3-fold term only, so the O
+     never grows a 4th/5th edge: three localized corner bumps, mean-centered
+     so the sides between them stay clean arcs (no inward dents). */
   float f = 0.5 + 0.5*cos(3.0*ths + 0.9);
   f = f*f;
-  return uRing * (1.0
-    + uLobe * 1.6 * (f - 0.375)
-    + uOrganic * (0.05*cos(2.0*ths - uOrgPhase) + 0.03*sin(4.0*ths + 0.7*uOrgPhase)));
+  return uRing * (1.0 + uLobe * 1.6 * (f - 0.375));
 }
 float tubeR(float ths){
   /* one-sided taper: thick on one side of the ring, slim opposite */
@@ -74,7 +73,8 @@ float tubeR(float ths){
 }
 
 float zWave(float ths){
-  return uOrganic * 0.07 * uRing * sin(3.0*ths - uOrgPhase*1.3);
+  /* subtle out-of-plane twist — 3-fold only, so it keeps exactly 3 corners */
+  return uOrganic * 0.08 * uRing * sin(3.0*ths - uOrgPhase*1.3);
 }
 
 float map(vec3 p){
@@ -127,9 +127,9 @@ vec3 inkOD(vec3 p, out float coreW){
   float flood = smoothstep(0.35, 1.1, dens);
   coreW *= mix(1.0, mix(gravW, 1.0, flood), uGravity);
 
-  /* baseline cool tint of the material itself — fills the whole tube
-     (wall included), so long grazing paths pick up a darker cold edge */
-  return od * coreW + vec3(0.040, 0.027, 0.014);
+  /* faint cool tint of the material itself — only a whisper, so the
+     ink-free shell stays clean white-blue and the blobs read distinctly */
+  return od * coreW + vec3(0.015, 0.011, 0.006);
 }
 
 mat3 orbit(float yaw, float pitch){
@@ -216,38 +216,52 @@ void main(){
     /* frosted polycarbonate: scattering from total path + extra from the
        wall, so grazing edges go milky-solid and the blob keeps a pale margin */
     float milk = 1.0 - exp(-(L*uFrost*1.6 + shellT*uFrost*3.0));
-    vec3 milkCol = vec3(0.985, 0.992, 1.0);
+    vec3 milkCol = vec3(0.95, 0.966, 0.99);   // translucent frosted blue-white
 
-    /* molded-in micro speckle, fixed to the shape so it rotates with it */
+    /* fine frosted-glass grain, fixed to the shape so it rotates with it —
+       kept subtle so the surface reads clean, not clay-speckled */
     vec3 ps = vec3(rot2(p.xy, -uSpinPhase), p.z);
-    float spk = (hash3(floor(ps*140.0)) - 0.5) * 0.055
-              + (hash3(floor(ps*47.0) + 7.0) - 0.5) * 0.03;
+    float spk = (hash3(floor(ps*180.0)) - 0.5) * 0.03
+              + (hash3(floor(ps*60.0) + 7.0) - 0.5) * 0.018;
 
     vec3 body = mix(bg * inkT, milkCol * exp(-od * uInk * 0.72), milk);
     body *= 1.0 + spk * uSpeckle * milk;
 
-    /* studio light rig: one big soft key above-front. wrap diffuse keeps
-       the shadow side alive, an extra term deepens the core shadow so the
-       tube reads round */
-    vec3 ld = normalize(vec3(-0.25, 0.85, 0.5));
+    /* ---- glossy clear-coat lighting (this is what reads as glass) ---- */
+    vec3  ld  = normalize(vec3(-0.28, 0.86, 0.42));   // big soft key, above-left
+    vec3  h   = normalize(ld - rd);                   // half-vector
     float ndl = dot(n, ld);
-    float shade = 0.36 * uLight;
-    float diff = (1.0 - shade) + shade*ndl;
-    diff *= 1.0 - 0.15*uLight*smoothstep(0.0, -0.8, ndl);
-    body *= diff;
+    float ndh = max(dot(n, h), 0.0);
+    float ndv = clamp(dot(n, -rd), 0.0, 1.0);
+    float fres = pow(1.0 - ndv, 3.0);
+
+    /* strong tonal gradient: bright top ridge -> shadowed underside, so the
+       round tube reads three-dimensional instead of flat */
+    float form = 0.5 + 0.5*ndl;
+    float grad = mix(1.0, 0.64 + 0.52*form, uLight);
+    grad *= 1.0 - 0.30*uLight*smoothstep(0.05, -0.85, ndl);   // deepen core shadow
+    body *= grad;
+
+    /* light-catching edge: the frosted surface turning away from the camera
+       glows softly — but only on the lit side, and spread (low exponent) so
+       it's a luminous gradient, not a hard white band */
+    float rim = pow(1.0 - ndv, 2.0) * form;
+    body += rim * vec3(0.80, 0.86, 0.98) * 0.11
+          * (0.4 + 0.6*milk) * uLight * mix(vec3(1.0), inkT, 0.4);
 
     /* faint bounce up from the backdrop */
-    body += vec3(0.018, 0.020, 0.022)
+    body += vec3(0.016, 0.018, 0.020)
           * clamp(dot(n, normalize(vec3(0.0, -0.75, 0.65))), 0.0, 1.0)
           * milk * uLight;
 
-    /* hazy elongated glare + soft sheen — a big area light reflected in a
-       frosted surface, riding the tube's top ridge; survives over ink */
-    vec3 rfl = reflect(rd, n);
-    float gA = pow(max(dot(rfl, ld), 0.0), 6.0);
-    float gB = pow(max(dot(rfl, ld), 0.0), 36.0);
-    body += (gA*0.16 + gB*0.11) * uGlare * (0.3 + 0.7*milk)
-          * mix(vec3(1.0), inkT, 0.3);
+    /* specular: a wide soft area-light sheen (the glassy body glow) plus a
+       crisp hot streak on the top ridge. Rides on the frosted coat, so it
+       survives (dimmed) over ink. */
+    float sBroad = pow(ndh, 8.0);
+    float sTight = pow(ndh, 120.0);
+    float coat   = 0.4 + 0.6*milk;
+    body += (sBroad*0.26 + sTight*0.34) * uGlare * coat
+          * mix(vec3(1.0), 0.35 + 0.65*inkT, 0.6);
 
     col = mix(bg, body, alpha);
   }
@@ -508,28 +522,28 @@ OrganicO.defaultProps = {
         { color: "#101C33", size: 0.55, speed: 0.32, ink: 1, tail: 0.6, drift: 0.45, follow: false },
         { color: "#33507A", size: 0.85, speed: -0.15, ink: 0.4, tail: 0.5, drift: 0.7, follow: false },
     ],
-    inkAmount: 0.9,
-    inkGravity: 0.8,
-    formLight: 0.7,
-    glare: 0.65,
-    spin: 0.2,
-    tiltSway: 0.5,
+    inkAmount: 0.95,
+    inkGravity: 0.82,
+    formLight: 0.9,
+    glare: 0.85,
+    spin: 0.16,
+    tiltSway: 0.45,
     tiltSpeed: 1,
-    organicDrift: 0.25,
+    organicDrift: 0.22,
     wobbleSpeed: 0.5,
-    shapeMorph: 1,
-    morphSpeed: 0.5,
+    shapeMorph: 0.85,
+    morphSpeed: 0.45,
     ringSize: 1,
-    triLobe: 0.18,
-    thickness: 0.21,
-    flatten: 0.72,
-    taper: 0.22,
+    triLobe: 0.19,
+    thickness: 0.2,
+    flatten: 0.7,
+    taper: 0.2,
     zoom: 1.18,
-    frost: 0.45,
-    wallThickness: 0.22,
-    speckle: 0.5,
-    softness: 1.4,
-    grain: 0.035,
+    frost: 0.4,
+    wallThickness: 0.2,
+    speckle: 0.3,
+    softness: 0.9,
+    grain: 0.02,
     background: "#F0F0F0",
     transparent: false,
 }

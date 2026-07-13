@@ -56,17 +56,32 @@ uniform int   uBlobN;
 uniform vec4  uBlobA[MAXB];       // x angle, y half-width(rad), z tail(signed), w strength
 uniform vec3  uBlobAbs[MAXB];     // -log(color): per-channel absorption
 
-/* Ring in the xy-plane, facing camera. All angular modulation uses integer
-   harmonics of theta so the atan seam is invisible. */
+/* Ring in the xy-plane, facing camera. The ring path is a true 2D distance
+   field: a blend of a circle and a rounded equilateral triangle, so the
+   morph is always a clean convex shape — flat sides bowing gently outward,
+   three corners of uniform curvature, never lumps or dents. */
 
-float ringR(float ths){
-  /* STRICTLY circle <-> rounded triangle. One 3-fold term only, so the O
-     never grows a 4th/5th edge: three localized corner bumps, mean-centered
-     so the sides between them stay clean arcs (no inward dents). */
-  float f = 0.5 + 0.5*cos(3.0*ths + 0.9);
-  f = f*f;
-  return uRing * (1.0 + uLobe * 1.6 * (f - 0.375));
+vec2 rot2(vec2 v, float a){ float c=cos(a), s=sin(a); return mat2(c,-s,s,c)*v; }
+
+float sdEqTri(vec2 p, float r){
+  const float k = 1.7320508;
+  p.x = abs(p.x) - r;
+  p.y = p.y + r/k;
+  if (p.x + k*p.y > 0.0) p = vec2(p.x - k*p.y, -k*p.x - p.y)*0.5;
+  p.x -= clamp(p.x, -2.0*r, 0.0);
+  return -length(p)*sign(p.y);
 }
+
+/* signed distance from a shape-space point to the ring path */
+float pathD(vec2 ps){
+  float dC = length(ps) - uRing;              // perfect circle
+  float c  = 0.45 * uRing;                    // corner rounding radius
+  float s  = (uRing - c) * 1.1547;            // triangle sized to match footprint
+  float dT = sdEqTri(ps, s) - c;              // rounded equilateral triangle
+  float w  = min(uLobe * 3.0, 0.9);           // never fully straight-sided
+  return mix(dC, dT, w);
+}
+
 float tubeR(float ths){
   /* one-sided taper: thick on one side of the ring, slim opposite */
   return uTube * (1.0 + uTaper * cos(ths + 0.4));
@@ -78,9 +93,9 @@ float zWave(float ths){
 }
 
 float map(vec3 p){
-  float th  = atan(p.y, p.x);
-  float ths = th - uSpinPhase;
-  vec2 q = vec2(length(p.xy) - ringR(ths), (p.z + zWave(ths))/uFlat);
+  vec2 ps = rot2(p.xy, -uSpinPhase);          // shape space (rigid spin)
+  float ths = atan(ps.y, ps.x);
+  vec2 q = vec2(pathD(ps), (p.z + zWave(ths))/uFlat);
   return (length(q) - tubeR(ths)) * 0.62 * uFlat;
 }
 
@@ -96,9 +111,10 @@ float hash3(vec3 p){ return fract(sin(dot(p, vec3(17.1,31.7,7.13)))*43758.5453);
 
 /* per-channel optical depth of the liquid at a point + how "core" it is */
 vec3 inkOD(vec3 p, out float coreW){
-  float th  = atan(p.y, p.x);
-  float ths = th - uSpinPhase;
-  vec2 q = vec2(length(p.xy) - ringR(ths), (p.z + zWave(ths))/uFlat);
+  vec2 ps   = rot2(p.xy, -uSpinPhase);
+  float ths = atan(ps.y, ps.x);               // shape angle (taper, waves)
+  float th  = atan(p.y, p.x);                 // world angle (blob positions)
+  vec2 q = vec2(pathD(ps), (p.z + zWave(ths))/uFlat);
   float r  = tubeR(ths);
   float qn = length(q) / r;                   // 0 at core .. 1 at surface
   float core = 1.0 - uWall;                   // liquid lives inside the wall
@@ -138,7 +154,6 @@ mat3 orbit(float yaw, float pitch){
   mat3 rx = mat3(1.,0.,0., 0.,cp,sp, 0.,-sp,cp);
   return ry*rx;
 }
-vec2 rot2(vec2 v, float a){ float c=cos(a), s=sin(a); return mat2(c,-s,s,c)*v; }
 
 void main(){
   vec2 uv = (gl_FragCoord.xy - 0.5*uRes) / min(uRes.x, uRes.y);

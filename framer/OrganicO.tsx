@@ -38,6 +38,8 @@ uniform float uTube;              // tube radius (in-plane)
 uniform float uFlat;              // cross-section z-scale (flattened coin < 1)
 uniform float uTaper;             // tube radius variation, rotates with shape
 uniform vec3  uCornerW;           // per-corner circle->triangle blend (liquid morph)
+uniform float uStretch;           // anisotropic stretch of the whole form
+uniform float uStretchA;          // stretch axis angle (drifts slowly)
 uniform float uOrganic;           // small in-plane radius drift, default low
 uniform float uInk;               // global ink multiplier
 uniform float uGravity;           // ink pull toward the ring's center
@@ -81,14 +83,18 @@ float sdEqTri(vec2 p, float r){
    the morph reads as liquid flowing, never a mechanical crossfade. The
    cos^2 masks at 120 degrees sum to a constant, so the field stays smooth. */
 float pathD(vec2 ps){
-  float dC = length(ps) - uRing;              // perfect circle
+  /* anisotropic stretch along a slowly drifting axis: the whole form is
+     elongated like pulled liquid, so it never reads as a regular polygon */
+  vec2 q = rot2(ps, -uStretchA);
+  q = vec2(q.x/(1.0 + uStretch), q.y*(1.0 + uStretch*0.7));
+  float dC = length(q) - uRing;               // circle -> stretched egg
   float c  = 0.58 * uRing;                    // generous corner rounding
   float s  = (uRing - c) * 1.1547;            // triangle sized to match footprint
-  float dT = sdEqTri(ps, s) - c;              // soft rounded equilateral triangle
-  float a  = atan(ps.y, ps.x) - 1.5708;       // corners at 90, 210, 330 deg
+  float dT = sdEqTri(q, s) - c;               // soft rounded equilateral triangle
+  float a  = atan(q.y, q.x) - 1.5708;         // corners at 90, 210, 330 deg
   float c0 = cos(a), c1 = cos(a - 2.0944), c2 = cos(a + 2.0944);
   float w = (uCornerW.x*c0*c0 + uCornerW.y*c1*c1 + uCornerW.z*c2*c2) * 0.6667;
-  return mix(dC, dT, w);
+  return mix(dC, dT, w) / (1.0 + uStretch);
 }
 
 float tubeR(float ths){
@@ -228,9 +234,14 @@ void main(){
       float st = L/float(NS);
       float j = hash(gl_FragCoord.xy + vec2(uJitter, uJitter*1.7));
       for (int i=0; i<NS; i++){
-        vec3 q = ro + rd*(t0 + (float(i)+j)*st);
+        float depth = (float(i)+j)*st;
+        vec3 q = ro + rd*(t0 + depth);
         float coreW;
-        od += inkOD(q, coreW);
+        /* frost extinction: the deeper the liquid sits, the hazier its
+           contribution — looking down the tube you see a soft gradient,
+           never a crisp dark core (that read as a hollow pipe) */
+        float wgt = exp(-depth * (1.2 + 4.5*uFrost));
+        od += inkOD(q, coreW) * wgt;
         shellT += 1.0 - coreW;
       }
       od *= st;
@@ -317,7 +328,7 @@ void main(){
 
 const UNIFORMS = [
     "uRes", "uYaw", "uPitch", "uSpinPhase", "uOrgPhase", "uZoom", "uTube",
-    "uRing", "uFlat", "uTaper", "uCornerW", "uOrganic", "uInk", "uGravity", "uLight",
+    "uRing", "uFlat", "uTaper", "uCornerW", "uStretch", "uStretchA", "uOrganic", "uInk", "uGravity", "uLight",
     "uGlare", "uFrost", "uWall",
     "uSpeckle", "uGrain", "uBg", "uSoft", "uJitter", "uTransparent",
     "uBgTex", "uBgMode", "uTexScale",
@@ -371,6 +382,7 @@ interface Props {
     overallSpeed: number
     ringSize: number
     triLobe: number
+    stretch: number
     thickness: number
     flatten: number
     taper: number
@@ -548,13 +560,16 @@ export default function OrganicO(props: Props) {
             gl.uniform1f(U.uRing, P.ringSize)
             gl.uniform1f(U.uTube, P.thickness)
             gl.uniform1f(U.uFlat, P.flatten)
-            const wMax = Math.min(P.triLobe * 3.0, 0.8)
+            const wMax = Math.min(P.triLobe * 3.0, 0.7)
             const CR = [1.0, 0.83, 1.19], CO = [0, 2.4, 4.4]
             const cw = CR.map((r, i) =>
                 wMax * (1 - P.shapeMorph * (0.5 + 0.5 * Math.sin(ph.morph * r + CO[i]))))
             gl.uniform3f(U.uCornerW, cw[0], cw[1], cw[2])
             const mTaper = 1 - P.shapeMorph * (0.5 + 0.5 * Math.sin(ph.morph * 0.77 + 1.9))
             gl.uniform1f(U.uTaper, P.taper * mTaper)
+            gl.uniform1f(U.uStretch,
+                P.stretch * (0.7 + 0.3 * Math.sin(ph.morph * 0.53 + 0.7)))
+            gl.uniform1f(U.uStretchA, ph.t * 0.07 + 0.8)
             if ((P.backgroundImage || "") !== tex.url) loadBackdrop(P.backgroundImage || "")
             gl.uniform1f(U.uBgMode, tex.ready ? 1 : 0)
             {
@@ -563,7 +578,7 @@ export default function OrganicO(props: Props) {
                 gl.uniform2f(U.uTexScale, sc[0], sc[1])
             }
             gl.uniform1f(U.uOrganic, P.organicDrift)
-            gl.uniform1f(U.uInk, P.inkAmount * 8)
+            gl.uniform1f(U.uInk, P.inkAmount * 12)
             gl.uniform1f(U.uGravity, P.inkGravity)
             gl.uniform1f(U.uLight, P.formLight)
             gl.uniform1f(U.uGlare, P.glare)
@@ -618,12 +633,13 @@ OrganicO.defaultProps = {
     morphSpeed: 0.45,
     overallSpeed: 1,
     ringSize: 1,
-    triLobe: 0.19,
+    triLobe: 0.17,
+    stretch: 0.14,
     thickness: 0.2,
     flatten: 0.7,
     taper: 0.2,
     zoom: 1.18,
-    frost: 0.4,
+    frost: 0.5,
     wallThickness: 0.2,
     speckle: 0.3,
     softness: 0.9,
@@ -669,6 +685,7 @@ addPropertyControls(OrganicO, {
     overallSpeed: { type: ControlType.Number, title: "Overall speed", min: 0, max: 3, step: 0.05 },
     ringSize: { type: ControlType.Number, title: "Ring size", min: 0.35, max: 1.35, step: 0.01 },
     triLobe: { type: ControlType.Number, title: "Tri-lobe", min: 0, max: 0.3, step: 0.005 },
+    stretch: { type: ControlType.Number, title: "Stretch", min: 0, max: 0.25, step: 0.005 },
     thickness: { type: ControlType.Number, title: "Thickness", min: 0.12, max: 0.45, step: 0.005 },
     flatten: { type: ControlType.Number, title: "Flatten", min: 0.5, max: 1, step: 0.01 },
     taper: { type: ControlType.Number, title: "Taper", min: 0, max: 0.4, step: 0.01 },

@@ -163,6 +163,9 @@
     <div class="ctl"><label>Tri-lobe <b id="v-lobe"></b></label>
       <input type="range" id="lobe" min="0" max="0.3" step="0.005"></div>
 
+    <div class="ctl"><label>Stretch <b id="v-stretch"></b></label>
+      <input type="range" id="stretch" min="0" max="0.25" step="0.005"></div>
+
     <div class="ctl"><label>Thickness <b id="v-tube"></b></label>
       <input type="range" id="tube" min="0.12" max="0.45" step="0.005"></div>
 
@@ -251,6 +254,8 @@ uniform float uTube;              // tube radius (in-plane)
 uniform float uFlat;              // cross-section z-scale (flattened coin < 1)
 uniform float uTaper;             // tube radius variation, rotates with shape
 uniform vec3  uCornerW;           // per-corner circle->triangle blend (liquid morph)
+uniform float uStretch;           // anisotropic stretch of the whole form
+uniform float uStretchA;          // stretch axis angle (drifts slowly)
 uniform float uOrganic;           // small in-plane radius drift, default low
 uniform float uInk;               // global ink multiplier
 uniform float uGravity;           // ink pull toward the ring's center
@@ -293,14 +298,18 @@ float sdEqTri(vec2 p, float r){
    the morph reads as liquid flowing, never a mechanical crossfade. The
    cos^2 masks at 120 degrees sum to a constant, so the field stays smooth. */
 float pathD(vec2 ps){
-  float dC = length(ps) - uRing;              // perfect circle
+  /* anisotropic stretch along a slowly drifting axis: the whole form is
+     elongated like pulled liquid, so it never reads as a regular polygon */
+  vec2 q = rot2(ps, -uStretchA);
+  q = vec2(q.x/(1.0 + uStretch), q.y*(1.0 + uStretch*0.7));
+  float dC = length(q) - uRing;               // circle -> stretched egg
   float c  = 0.58 * uRing;                    // generous corner rounding
   float s  = (uRing - c) * 1.1547;            // triangle sized to match footprint
-  float dT = sdEqTri(ps, s) - c;              // soft rounded equilateral triangle
-  float a  = atan(ps.y, ps.x) - 1.5708;       // corners at 90, 210, 330 deg
+  float dT = sdEqTri(q, s) - c;               // soft rounded equilateral triangle
+  float a  = atan(q.y, q.x) - 1.5708;         // corners at 90, 210, 330 deg
   float c0 = cos(a), c1 = cos(a - 2.0944), c2 = cos(a + 2.0944);
   float w = (uCornerW.x*c0*c0 + uCornerW.y*c1*c1 + uCornerW.z*c2*c2) * 0.6667;
-  return mix(dC, dT, w);
+  return mix(dC, dT, w) / (1.0 + uStretch);
 }
 
 float tubeR(float ths){
@@ -440,9 +449,14 @@ void main(){
       float st = L/float(NS);
       float j = hash(gl_FragCoord.xy + vec2(uJitter, uJitter*1.7));
       for (int i=0; i<NS; i++){
-        vec3 q = ro + rd*(t0 + (float(i)+j)*st);
+        float depth = (float(i)+j)*st;
+        vec3 q = ro + rd*(t0 + depth);
         float coreW;
-        od += inkOD(q, coreW);
+        /* frost extinction: the deeper the liquid sits, the hazier its
+           contribution — looking down the tube you see a soft gradient,
+           never a crisp dark core (that read as a hollow pipe) */
+        float wgt = exp(-depth * (1.2 + 4.5*uFrost));
+        od += inkOD(q, coreW) * wgt;
         shellT += 1.0 - coreW;
       }
       od *= st;
@@ -542,7 +556,7 @@ if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
 gl.useProgram(prog);
 const U = {};
 ["uRes","uYaw","uPitch","uSpinPhase","uOrgPhase","uZoom","uTube","uFlat","uTaper",
- "uCornerW","uOrganic","uInk","uGravity","uLight","uGlare","uFrost","uWall","uSpeckle",
+ "uCornerW","uStretch","uStretchA","uOrganic","uInk","uGravity","uLight","uGlare","uFrost","uWall","uSpeckle",
  "uGrain","uBg","uSoft","uRing","uJitter","uBgTex","uBgMode","uTexScale",
  "uBlobN","uBlobA","uBlobAbs"]
  .forEach(n => U[n] = gl.getUniformLocation(prog, n));
@@ -575,8 +589,8 @@ const PRESETS = {
     dials: { ink:0.95, gravity:0.82, light:0.9, glare:0.85, speed:1,
              spin:0.16, tilt:0.45, tiltspd:1.0, wob:0.22, wobspd:0.5,
              morph:0.85, morphspd:0.45,
-             ring:1.0, lobe:0.19, tube:0.2, flat:0.7, taper:0.2, zoom:1.18,
-             frost:0.4, wall:0.2, speckle:0.3, soft:0.9, grain:0.02, bg:0.945 },
+             ring:1.0, lobe:0.17, stretch:0.14, tube:0.2, flat:0.7, taper:0.2, zoom:1.18,
+             frost:0.5, wall:0.2, speckle:0.3, soft:0.9, grain:0.02, bg:0.945 },
     blobs: [
       { color:"#101c33", size:0.55, speed:0.32,  amt:1.0,  tail:0.6, drift:0.45 },
       { color:"#33507a", size:0.85, speed:-0.15, amt:0.4,  tail:0.5, drift:0.7 },
@@ -586,7 +600,7 @@ const PRESETS = {
     dials: { ink:0.8, gravity:0.55, light:0.6, glare:0.55, speed:1,
              spin:0.12, tilt:0.4, tiltspd:0.8, wob:0.35, wobspd:0.8,
              morph:0.7, morphspd:0.7,
-             ring:1.0, lobe:0.15, tube:0.34, flat:0.78, taper:0.1, zoom:1.0,
+             ring:1.0, lobe:0.15, stretch:0.1, tube:0.34, flat:0.78, taper:0.1, zoom:1.0,
              frost:0.9, wall:0.26, speckle:0.6, soft:1.6, grain:0.03, bg:0.945 },
     blobs: [
       { color:"#1c2f56", size:0.5,  speed:0.25,  amt:0.9, tail:0.55, drift:0.6 },
@@ -598,7 +612,7 @@ const PRESETS = {
     dials: { ink:0.4, gravity:0.45, light:0.5, glare:0.4, speed:0.8,
              spin:0.1, tilt:0.35, tiltspd:0.7, wob:0.15, wobspd:0.5,
              morph:0.5, morphspd:0.4,
-             ring:1.0, lobe:0.16, tube:0.28, flat:0.75, taper:0.1, zoom:1.0,
+             ring:1.0, lobe:0.16, stretch:0.08, tube:0.28, flat:0.75, taper:0.1, zoom:1.0,
              frost:1.0, wall:0.3, speckle:0.4, soft:2.2, grain:0.025, bg:0.95 },
     blobs: [
       { color:"#3d5a80", size:0.9, speed:0.22, amt:0.55, tail:0.5, drift:0.5 },
@@ -607,7 +621,7 @@ const PRESETS = {
 };
 
 const DIALS = ["ink","gravity","light","glare","speed","spin","tilt","tiltspd","wob",
-               "wobspd","morph","morphspd","ring","lobe","tube","flat","taper",
+               "wobspd","morph","morphspd","ring","lobe","stretch","tube","flat","taper",
                "zoom","frost","wall","speckle","soft","grain","bg"];
 
 function hex2rgb(h){ return [1,3,5].map(i => parseInt(h.slice(i, i+2), 16)/255); }
@@ -941,15 +955,19 @@ function frame(now){
      between (1 - morph) x max and max. Each of the three corners runs on its
      own slightly-detuned clock, so they swell and relax independently — the
      shape flows like liquid instead of crossfading */
-  const wMax = Math.min(S.lobe * 3.0, 0.8);
+  const wMax = Math.min(S.lobe * 3.0, 0.7);
   const CR = [1.0, 0.83, 1.19], CO = [0, 2.4, 4.4];
   const cw = CR.map((r, i) =>
     wMax * (1 - S.morph * (0.5 + 0.5*Math.sin(ph.morph*r + CO[i]))));
   gl.uniform3f(U.uCornerW, cw[0], cw[1], cw[2]);
   const mTaper = 1 - S.morph * (0.5 + 0.5*Math.sin(ph.morph*0.77 + 1.9));
   gl.uniform1f(U.uTaper, S.taper * mTaper);
+  /* the stretch axis drifts slowly and its amount breathes with the morph,
+     so the elongation flows around the form like pulled liquid */
+  gl.uniform1f(U.uStretch, S.stretch * (0.7 + 0.3*Math.sin(ph.morph*0.53 + 0.7)));
+  gl.uniform1f(U.uStretchA, ph.t*0.07 + 0.8);
   gl.uniform1f(U.uOrganic, S.wob);
-  gl.uniform1f(U.uInk, S.ink * 8.0);
+  gl.uniform1f(U.uInk, S.ink * 12.0);
   gl.uniform1f(U.uGravity, S.gravity);
   gl.uniform1f(U.uLight, S.light);
   gl.uniform1f(U.uGlare, S.glare);

@@ -37,7 +37,7 @@ uniform float uRing;              // ring radius — hole size, tube stays absol
 uniform float uTube;              // tube radius (in-plane)
 uniform float uFlat;              // cross-section z-scale (flattened coin < 1)
 uniform float uTaper;             // tube radius variation, rotates with shape
-uniform float uLobe;              // tri-lobe amplitude (constant = rigid form)
+uniform vec3  uCornerW;           // per-corner circle->triangle blend (liquid morph)
 uniform float uOrganic;           // small in-plane radius drift, default low
 uniform float uInk;               // global ink multiplier
 uniform float uGravity;           // ink pull toward the ring's center
@@ -50,6 +50,9 @@ uniform float uGrain;
 uniform vec3  uBg;
 uniform float uSoft;              // silhouette AA in pixels
 uniform float uJitter;            // per-frame dither for the volume integral
+uniform sampler2D uBgTex;         // backdrop image (see-through frost)
+uniform float uBgMode;            // 0 = flat color, 1 = texture
+uniform vec2  uTexScale;          // cover-fit scale for the backdrop
 uniform float uTransparent;       // 1 = emit alpha, background pixels transparent
 
 uniform int   uBlobN;
@@ -72,13 +75,19 @@ float sdEqTri(vec2 p, float r){
   return -length(p)*sign(p.y);
 }
 
-/* signed distance from a shape-space point to the ring path */
+/* signed distance from a shape-space point to the ring path.
+   Each of the three corners has its own circle->triangle weight, driven on
+   its own clock from the CPU — corners swell and relax independently, so
+   the morph reads as liquid flowing, never a mechanical crossfade. The
+   cos^2 masks at 120 degrees sum to a constant, so the field stays smooth. */
 float pathD(vec2 ps){
   float dC = length(ps) - uRing;              // perfect circle
-  float c  = 0.45 * uRing;                    // corner rounding radius
+  float c  = 0.58 * uRing;                    // generous corner rounding
   float s  = (uRing - c) * 1.1547;            // triangle sized to match footprint
-  float dT = sdEqTri(ps, s) - c;              // rounded equilateral triangle
-  float w  = min(uLobe * 3.0, 0.9);           // never fully straight-sided
+  float dT = sdEqTri(ps, s) - c;              // soft rounded equilateral triangle
+  float a  = atan(ps.y, ps.x) - 1.5708;       // corners at 90, 210, 330 deg
+  float c0 = cos(a), c1 = cos(a - 2.0944), c2 = cos(a + 2.0944);
+  float w = (uCornerW.x*c0*c0 + uCornerW.y*c1*c1 + uCornerW.z*c2*c2) * 0.6667;
   return mix(dC, dT, w);
 }
 
@@ -96,7 +105,7 @@ float map(vec3 p){
   vec2 ps = rot2(p.xy, -uSpinPhase);          // shape space (rigid spin)
   float ths = atan(ps.y, ps.x);
   vec2 q = vec2(pathD(ps), (p.z + zWave(ths))/uFlat);
-  return (length(q) - tubeR(ths)) * 0.62 * uFlat;
+  return (length(q) - tubeR(ths)) * 0.55 * uFlat;
 }
 
 vec3 calcNormal(vec3 p){
@@ -185,10 +194,12 @@ void main(){
     if (t > camD + 2.6) break;
   }
 
-  /* background: slight vignette + a soft shadow that pools below the
-     object (key light comes from above) */
+  /* background: flat color or a backdrop image; slight vignette + a soft
+     shadow that pools below the object (key light comes from above) */
+  vec2 suv = (gl_FragCoord.xy/uRes - 0.5)*uTexScale + 0.5;
+  vec3 bgBase = uBgMode > 0.5 ? texture(uBgTex, suv).rgb : uBg;
   float vig = length(uv)*0.5;
-  vec3 bg = uBg * (1.0 - 0.04*vig*vig) * (1.0 + 0.008*uv.y);
+  vec3 bg = bgBase * (1.0 - 0.04*vig*vig) * (1.0 + 0.008*uv.y);
   float below = smoothstep(0.15, -0.45, uv.y);
   bg *= 1.0 - (0.018 + 0.05*below*uLight) * exp(-max(minD, 0.0)*2.2);
 
@@ -207,7 +218,7 @@ void main(){
     for (int i=0; i<48; i++){
       float d = map(ro + rd*tExit);
       if (d > 0.0015) break;
-      tExit += max(-d/(0.62*uFlat), 0.012);
+      tExit += max(-d/(0.55*uFlat), 0.012);
     }
     float L = tExit - t0;
     vec3 od = vec3(0.0);
@@ -229,9 +240,25 @@ void main(){
     vec3 inkT = exp(-od * uInk);
 
     /* frosted polycarbonate: scattering from total path + extra from the
-       wall, so grazing edges go milky-solid and the blob keeps a pale margin */
-    float milk = 1.0 - exp(-(L*uFrost*1.6 + shellT*uFrost*3.0));
+       wall, so grazing edges go milky-solid and the blob keeps a pale margin.
+       Capped below 1 so the glass always stays see-through. */
+    float milk = (1.0 - exp(-(L*uFrost*1.6 + shellT*uFrost*3.0))) * 0.82;
     vec3 milkCol = vec3(0.95, 0.966, 0.99);   // translucent frosted blue-white
+
+    /* what shows THROUGH the glass: the backdrop, refracted by the surface
+       normal and blurred by the frost — real frosted-glass transmission */
+    vec3 seen = bg;
+    if (uBgMode > 0.5){
+      vec2 refr  = n.xy * (0.02 + 0.10*L) * uTexScale;
+      float blurR = 0.003 + 0.05*milk;
+      float j2 = hash(gl_FragCoord.yx + uJitter);
+      vec3 acc = vec3(0.0);
+      for (int i=0; i<8; i++){
+        float an = (float(i) + j2)*0.7854;
+        acc += texture(uBgTex, suv - refr + vec2(cos(an), sin(an))*blurR).rgb;
+      }
+      seen = acc*0.125;
+    }
 
     /* fine frosted-glass grain, fixed to the shape so it rotates with it —
        kept subtle so the surface reads clean, not clay-speckled */
@@ -239,7 +266,7 @@ void main(){
     float spk = (hash3(floor(ps*180.0)) - 0.5) * 0.03
               + (hash3(floor(ps*60.0) + 7.0) - 0.5) * 0.018;
 
-    vec3 body = mix(bg * inkT, milkCol * exp(-od * uInk * 0.72), milk);
+    vec3 body = mix(seen * inkT, milkCol * exp(-od * uInk * 0.72), milk);
     body *= 1.0 + spk * uSpeckle * milk;
 
     /* ---- glossy clear-coat lighting (this is what reads as glass) ---- */
@@ -290,9 +317,10 @@ void main(){
 
 const UNIFORMS = [
     "uRes", "uYaw", "uPitch", "uSpinPhase", "uOrgPhase", "uZoom", "uTube",
-    "uRing", "uFlat", "uTaper", "uLobe", "uOrganic", "uInk", "uGravity", "uLight",
+    "uRing", "uFlat", "uTaper", "uCornerW", "uOrganic", "uInk", "uGravity", "uLight",
     "uGlare", "uFrost", "uWall",
     "uSpeckle", "uGrain", "uBg", "uSoft", "uJitter", "uTransparent",
+    "uBgTex", "uBgMode", "uTexScale",
     "uBlobN", "uBlobA", "uBlobAbs",
 ]
 
@@ -340,6 +368,7 @@ interface Props {
     wobbleSpeed: number
     shapeMorph: number
     morphSpeed: number
+    overallSpeed: number
     ringSize: number
     triLobe: number
     thickness: number
@@ -352,6 +381,7 @@ interface Props {
     softness: number
     grain: number
     background: string
+    backgroundImage: string
     transparent: boolean
 }
 
@@ -387,6 +417,33 @@ export default function OrganicO(props: Props) {
         gl.useProgram(prog)
         const U: Record<string, WebGLUniformLocation | null> = {}
         UNIFORMS.forEach((n) => (U[n] = gl.getUniformLocation(prog, n)))
+
+        const bgTex = gl.createTexture()
+        gl.activeTexture(gl.TEXTURE0)
+        gl.bindTexture(gl.TEXTURE_2D, bgTex)
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA,
+            gl.UNSIGNED_BYTE, new Uint8Array([240, 240, 242, 255]))
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+        gl.uniform1i(U.uBgTex, 0)
+        const tex = { url: "", ready: false, w: 1, h: 1 }
+        const loadBackdrop = (url: string) => {
+            tex.url = url
+            tex.ready = false
+            if (!url) return
+            const img = new Image()
+            img.crossOrigin = "anonymous"
+            img.onload = () => {
+                if (tex.url !== url || disposed) return
+                gl.bindTexture(gl.TEXTURE_2D, bgTex)
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img)
+                tex.w = img.naturalWidth; tex.h = img.naturalHeight
+                tex.ready = true
+            }
+            img.src = url
+        }
 
         /* per-blob angle state lives here, keyed by index */
         const angles: number[] = []
@@ -433,11 +490,12 @@ export default function OrganicO(props: Props) {
                 dFq.push(0.35 + 0.13 * i)
             }
 
+            const dts = dt * P.overallSpeed
             if (!isCanvas) {
-                ph.t += dt
-                ph.spin += dt * P.spin * 0.35
-                ph.org += dt * P.wobbleSpeed * 1.1
-                ph.morph += dt * P.morphSpeed * 0.45
+                ph.t += dts
+                ph.spin += dts * P.spin * 0.35
+                ph.org += dts * P.wobbleSpeed * 1.1
+                ph.morph += dts * P.morphSpeed * 0.45
                 for (let i = 0; i < blobs.length; i++) {
                     const b = blobs[i]
                     if (b.follow && cursor.has) {
@@ -447,7 +505,7 @@ export default function OrganicO(props: Props) {
                     } else {
                         const mod =
                             1 + b.drift * Math.sin(ph.t * dFq[i] + dPh[i])
-                        angles[i] += dt * b.speed * mod
+                        angles[i] += dts * b.speed * mod
                     }
                 }
             }
@@ -490,10 +548,20 @@ export default function OrganicO(props: Props) {
             gl.uniform1f(U.uRing, P.ringSize)
             gl.uniform1f(U.uTube, P.thickness)
             gl.uniform1f(U.uFlat, P.flatten)
-            const mLobe = 1 - P.shapeMorph * (0.5 + 0.5 * Math.sin(ph.morph))
+            const wMax = Math.min(P.triLobe * 3.0, 0.8)
+            const CR = [1.0, 0.83, 1.19], CO = [0, 2.4, 4.4]
+            const cw = CR.map((r, i) =>
+                wMax * (1 - P.shapeMorph * (0.5 + 0.5 * Math.sin(ph.morph * r + CO[i]))))
+            gl.uniform3f(U.uCornerW, cw[0], cw[1], cw[2])
             const mTaper = 1 - P.shapeMorph * (0.5 + 0.5 * Math.sin(ph.morph * 0.77 + 1.9))
             gl.uniform1f(U.uTaper, P.taper * mTaper)
-            gl.uniform1f(U.uLobe, P.triLobe * mLobe)
+            if ((P.backgroundImage || "") !== tex.url) loadBackdrop(P.backgroundImage || "")
+            gl.uniform1f(U.uBgMode, tex.ready ? 1 : 0)
+            {
+                const ca = w / h, ta = tex.w / tex.h
+                const sc = ta > ca ? [ca / ta, 1] : [1, ta / ca]
+                gl.uniform2f(U.uTexScale, sc[0], sc[1])
+            }
             gl.uniform1f(U.uOrganic, P.organicDrift)
             gl.uniform1f(U.uInk, P.inkAmount * 8)
             gl.uniform1f(U.uGravity, P.inkGravity)
@@ -548,6 +616,7 @@ OrganicO.defaultProps = {
     wobbleSpeed: 0.5,
     shapeMorph: 0.85,
     morphSpeed: 0.45,
+    overallSpeed: 1,
     ringSize: 1,
     triLobe: 0.19,
     thickness: 0.2,
@@ -560,6 +629,7 @@ OrganicO.defaultProps = {
     softness: 0.9,
     grain: 0.02,
     background: "#F0F0F0",
+    backgroundImage: "",
     transparent: false,
 }
 
@@ -596,6 +666,7 @@ addPropertyControls(OrganicO, {
     wobbleSpeed: { type: ControlType.Number, title: "Wobble speed", min: 0, max: 2, step: 0.01 },
     shapeMorph: { type: ControlType.Number, title: "Shape morph", min: 0, max: 1, step: 0.01 },
     morphSpeed: { type: ControlType.Number, title: "Morph speed", min: 0, max: 2, step: 0.01 },
+    overallSpeed: { type: ControlType.Number, title: "Overall speed", min: 0, max: 3, step: 0.05 },
     ringSize: { type: ControlType.Number, title: "Ring size", min: 0.35, max: 1.35, step: 0.01 },
     triLobe: { type: ControlType.Number, title: "Tri-lobe", min: 0, max: 0.3, step: 0.005 },
     thickness: { type: ControlType.Number, title: "Thickness", min: 0.12, max: 0.45, step: 0.005 },
@@ -608,5 +679,6 @@ addPropertyControls(OrganicO, {
     softness: { type: ControlType.Number, title: "Softness", min: 0.5, max: 6, step: 0.1 },
     grain: { type: ControlType.Number, title: "Grain", min: 0, max: 0.12, step: 0.002 },
     background: { type: ControlType.Color, title: "Background" },
+    backgroundImage: { type: ControlType.Image, title: "Backdrop img" },
     transparent: { type: ControlType.Boolean, title: "Transparent" },
 })

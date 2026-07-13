@@ -131,6 +131,9 @@
 
     <div class="sec">MOTION — rigid, never noisy</div>
 
+    <div class="ctl"><label>Overall speed <b id="v-speed"></b></label>
+      <input type="range" id="speed" min="0" max="3" step="0.05"></div>
+
     <div class="ctl"><label>Spin <b id="v-spin"></b></label>
       <input type="range" id="spin" min="-1" max="1" step="0.01"></div>
 
@@ -173,6 +176,15 @@
       <input type="range" id="zoom" min="0.5" max="2" step="0.01"></div>
 
     <div class="sec">SHELL — frosted Y2K plastic</div>
+
+    <div class="ctl"><label>Backdrop — glass sees through it</label>
+      <div class="btnrow" id="bgmode">
+        <button data-m="flat">Flat</button>
+        <button data-m="grad">Gradient</button>
+        <button data-m="img">Image…</button>
+      </div>
+      <input type="file" id="bgfile" accept="image/*" style="display:none">
+    </div>
 
     <div class="ctl"><label>Frost <b id="v-frost"></b></label>
       <input type="range" id="frost" min="0" max="1" step="0.01"></div>
@@ -238,7 +250,7 @@ uniform float uRing;              // ring radius — hole size, tube stays absol
 uniform float uTube;              // tube radius (in-plane)
 uniform float uFlat;              // cross-section z-scale (flattened coin < 1)
 uniform float uTaper;             // tube radius variation, rotates with shape
-uniform float uLobe;              // tri-lobe amplitude (constant = rigid form)
+uniform vec3  uCornerW;           // per-corner circle->triangle blend (liquid morph)
 uniform float uOrganic;           // small in-plane radius drift, default low
 uniform float uInk;               // global ink multiplier
 uniform float uGravity;           // ink pull toward the ring's center
@@ -251,6 +263,9 @@ uniform float uGrain;
 uniform vec3  uBg;
 uniform float uSoft;              // silhouette AA in pixels
 uniform float uJitter;            // per-frame dither for the volume integral
+uniform sampler2D uBgTex;         // backdrop image (see-through frost)
+uniform float uBgMode;            // 0 = flat color, 1 = texture
+uniform vec2  uTexScale;          // cover-fit scale for the backdrop
 
 uniform int   uBlobN;
 uniform vec4  uBlobA[MAXB];       // x angle, y half-width(rad), z tail(signed), w strength
@@ -272,13 +287,19 @@ float sdEqTri(vec2 p, float r){
   return -length(p)*sign(p.y);
 }
 
-/* signed distance from a shape-space point to the ring path */
+/* signed distance from a shape-space point to the ring path.
+   Each of the three corners has its own circle->triangle weight, driven on
+   its own clock from the CPU — corners swell and relax independently, so
+   the morph reads as liquid flowing, never a mechanical crossfade. The
+   cos^2 masks at 120 degrees sum to a constant, so the field stays smooth. */
 float pathD(vec2 ps){
   float dC = length(ps) - uRing;              // perfect circle
-  float c  = 0.45 * uRing;                    // corner rounding radius
+  float c  = 0.58 * uRing;                    // generous corner rounding
   float s  = (uRing - c) * 1.1547;            // triangle sized to match footprint
-  float dT = sdEqTri(ps, s) - c;              // rounded equilateral triangle
-  float w  = min(uLobe * 3.0, 0.9);           // never fully straight-sided
+  float dT = sdEqTri(ps, s) - c;              // soft rounded equilateral triangle
+  float a  = atan(ps.y, ps.x) - 1.5708;       // corners at 90, 210, 330 deg
+  float c0 = cos(a), c1 = cos(a - 2.0944), c2 = cos(a + 2.0944);
+  float w = (uCornerW.x*c0*c0 + uCornerW.y*c1*c1 + uCornerW.z*c2*c2) * 0.6667;
   return mix(dC, dT, w);
 }
 
@@ -296,7 +317,7 @@ float map(vec3 p){
   vec2 ps = rot2(p.xy, -uSpinPhase);          // shape space (rigid spin)
   float ths = atan(ps.y, ps.x);
   vec2 q = vec2(pathD(ps), (p.z + zWave(ths))/uFlat);
-  return (length(q) - tubeR(ths)) * 0.62 * uFlat;
+  return (length(q) - tubeR(ths)) * 0.55 * uFlat;
 }
 
 vec3 calcNormal(vec3 p){
@@ -385,10 +406,12 @@ void main(){
     if (t > camD + 2.6) break;
   }
 
-  /* background: slight vignette + a soft shadow that pools below the
-     object (key light comes from above) */
+  /* background: flat color or a backdrop image; slight vignette + a soft
+     shadow that pools below the object (key light comes from above) */
+  vec2 suv = (gl_FragCoord.xy/uRes - 0.5)*uTexScale + 0.5;
+  vec3 bgBase = uBgMode > 0.5 ? texture(uBgTex, suv).rgb : uBg;
   float vig = length(uv)*0.5;
-  vec3 bg = uBg * (1.0 - 0.04*vig*vig) * (1.0 + 0.008*uv.y);
+  vec3 bg = bgBase * (1.0 - 0.04*vig*vig) * (1.0 + 0.008*uv.y);
   float below = smoothstep(0.15, -0.45, uv.y);
   bg *= 1.0 - (0.018 + 0.05*below*uLight) * exp(-max(minD, 0.0)*2.2);
 
@@ -407,7 +430,7 @@ void main(){
     for (int i=0; i<48; i++){
       float d = map(ro + rd*tExit);
       if (d > 0.0015) break;
-      tExit += max(-d/(0.62*uFlat), 0.012);
+      tExit += max(-d/(0.55*uFlat), 0.012);
     }
     float L = tExit - t0;
     vec3 od = vec3(0.0);
@@ -429,9 +452,25 @@ void main(){
     vec3 inkT = exp(-od * uInk);
 
     /* frosted polycarbonate: scattering from total path + extra from the
-       wall, so grazing edges go milky-solid and the blob keeps a pale margin */
-    float milk = 1.0 - exp(-(L*uFrost*1.6 + shellT*uFrost*3.0));
+       wall, so grazing edges go milky-solid and the blob keeps a pale margin.
+       Capped below 1 so the glass always stays see-through. */
+    float milk = (1.0 - exp(-(L*uFrost*1.6 + shellT*uFrost*3.0))) * 0.82;
     vec3 milkCol = vec3(0.95, 0.966, 0.99);   // translucent frosted blue-white
+
+    /* what shows THROUGH the glass: the backdrop, refracted by the surface
+       normal and blurred by the frost — real frosted-glass transmission */
+    vec3 seen = bg;
+    if (uBgMode > 0.5){
+      vec2 refr  = n.xy * (0.02 + 0.10*L) * uTexScale;
+      float blurR = 0.003 + 0.05*milk;
+      float j2 = hash(gl_FragCoord.yx + uJitter);
+      vec3 acc = vec3(0.0);
+      for (int i=0; i<8; i++){
+        float an = (float(i) + j2)*0.7854;
+        acc += texture(uBgTex, suv - refr + vec2(cos(an), sin(an))*blurR).rgb;
+      }
+      seen = acc*0.125;
+    }
 
     /* fine frosted-glass grain, fixed to the shape so it rotates with it —
        kept subtle so the surface reads clean, not clay-speckled */
@@ -439,7 +478,7 @@ void main(){
     float spk = (hash3(floor(ps*180.0)) - 0.5) * 0.03
               + (hash3(floor(ps*60.0) + 7.0) - 0.5) * 0.018;
 
-    vec3 body = mix(bg * inkT, milkCol * exp(-od * uInk * 0.72), milk);
+    vec3 body = mix(seen * inkT, milkCol * exp(-od * uInk * 0.72), milk);
     body *= 1.0 + spk * uSpeckle * milk;
 
     /* ---- glossy clear-coat lighting (this is what reads as glass) ---- */
@@ -503,8 +542,9 @@ if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
 gl.useProgram(prog);
 const U = {};
 ["uRes","uYaw","uPitch","uSpinPhase","uOrgPhase","uZoom","uTube","uFlat","uTaper",
- "uLobe","uOrganic","uInk","uGravity","uLight","uGlare","uFrost","uWall","uSpeckle",
- "uGrain","uBg","uSoft","uRing","uJitter","uBlobN","uBlobA","uBlobAbs"]
+ "uCornerW","uOrganic","uInk","uGravity","uLight","uGlare","uFrost","uWall","uSpeckle",
+ "uGrain","uBg","uSoft","uRing","uJitter","uBgTex","uBgMode","uTexScale",
+ "uBlobN","uBlobA","uBlobAbs"]
  .forEach(n => U[n] = gl.getUniformLocation(prog, n));
 
 /* ============================================================
@@ -532,7 +572,7 @@ function mkBlob(over){
 
 const PRESETS = {
   reference: {
-    dials: { ink:0.95, gravity:0.82, light:0.9, glare:0.85,
+    dials: { ink:0.95, gravity:0.82, light:0.9, glare:0.85, speed:1,
              spin:0.16, tilt:0.45, tiltspd:1.0, wob:0.22, wobspd:0.5,
              morph:0.85, morphspd:0.45,
              ring:1.0, lobe:0.19, tube:0.2, flat:0.7, taper:0.2, zoom:1.18,
@@ -543,7 +583,7 @@ const PRESETS = {
     ],
   },
   lava: {
-    dials: { ink:0.8, gravity:0.55, light:0.6, glare:0.55,
+    dials: { ink:0.8, gravity:0.55, light:0.6, glare:0.55, speed:1,
              spin:0.12, tilt:0.4, tiltspd:0.8, wob:0.35, wobspd:0.8,
              morph:0.7, morphspd:0.7,
              ring:1.0, lobe:0.15, tube:0.34, flat:0.78, taper:0.1, zoom:1.0,
@@ -555,7 +595,7 @@ const PRESETS = {
     ],
   },
   ghost: {
-    dials: { ink:0.4, gravity:0.45, light:0.5, glare:0.4,
+    dials: { ink:0.4, gravity:0.45, light:0.5, glare:0.4, speed:0.8,
              spin:0.1, tilt:0.35, tiltspd:0.7, wob:0.15, wobspd:0.5,
              morph:0.5, morphspd:0.4,
              ring:1.0, lobe:0.16, tube:0.28, flat:0.75, taper:0.1, zoom:1.0,
@@ -566,7 +606,7 @@ const PRESETS = {
   },
 };
 
-const DIALS = ["ink","gravity","light","glare","spin","tilt","tiltspd","wob",
+const DIALS = ["ink","gravity","light","glare","speed","spin","tilt","tiltspd","wob",
                "wobspd","morph","morphspd","ring","lobe","tube","flat","taper",
                "zoom","frost","wall","speckle","soft","grain","bg"];
 
@@ -746,6 +786,55 @@ document.getElementById("panelHead").addEventListener("click", () => {
 applyPreset(PRESETS.reference);
 
 /* ============================================================
+   Backdrop texture — the frosted glass sees through it
+============================================================ */
+const bgTex = gl.createTexture();
+gl.activeTexture(gl.TEXTURE0);
+gl.bindTexture(gl.TEXTURE_2D, bgTex);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+              new Uint8Array([240, 240, 242, 255]));
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+gl.uniform1i(U.uBgTex, 0);
+
+let bgMode = 0, texW = 1, texH = 1;
+function setTexImage(src, w, h){
+  gl.bindTexture(gl.TEXTURE_2D, bgTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+  texW = w; texH = h; bgMode = 1;
+}
+function makeGradient(){
+  const c = document.createElement("canvas");
+  c.width = c.height = 512;
+  const x = c.getContext("2d");
+  const g = x.createLinearGradient(0, 512, 512, 0);
+  g.addColorStop(0.0, "#1d2f52");
+  g.addColorStop(0.35, "#3f6fa8");
+  g.addColorStop(0.62, "#7fc3c9");
+  g.addColorStop(0.85, "#f3d9a4");
+  g.addColorStop(1.0, "#e88a5d");
+  x.fillStyle = g; x.fillRect(0, 0, 512, 512);
+  const r = x.createRadialGradient(140, 150, 10, 140, 150, 300);
+  r.addColorStop(0, "rgba(255,255,255,.5)"); r.addColorStop(1, "rgba(255,255,255,0)");
+  x.fillStyle = r; x.fillRect(0, 0, 512, 512);
+  setTexImage(c, 512, 512);
+}
+document.getElementById("bgmode").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.dataset.m === "flat") bgMode = 0;
+  else if (b.dataset.m === "grad") makeGradient();
+  else document.getElementById("bgfile").click();
+});
+document.getElementById("bgfile").addEventListener("change", e => {
+  const file = e.target.files[0]; if (!file) return;
+  const img = new Image();
+  img.onload = () => { setTexImage(img, img.naturalWidth, img.naturalHeight); URL.revokeObjectURL(img.src); };
+  img.src = URL.createObjectURL(file);
+});
+
+/* ============================================================
    Pointer: drag = orbit; cursor angle can drive blobs marked "cursor"
 ============================================================ */
 const drag = { on:false, x:0, y:0, yaw:0, pitch:0 };
@@ -803,18 +892,19 @@ function frame(now){
   const dt = Math.min((now - last)/1000, 0.05);
   last = now; frameN++;
 
+  const dts = dt * S.speed;          // master clock — one dial scales it all
   if (!paused){
-    ph.t    += dt;
-    ph.spin += dt * S.spin * 0.35;
-    ph.org  += dt * S.wobspd * 1.1;
-    ph.morph += dt * S.morphspd * 0.45;
+    ph.t    += dts;
+    ph.spin += dts * S.spin * 0.35;
+    ph.org  += dts * S.wobspd * 1.1;
+    ph.morph += dts * S.morphspd * 0.45;
     for (const b of blobs){
       if (b.follow && cursor.has){
         b.angle += shortestArc(b.angle, cursor.angle) * Math.min(1, dt*4);
       } else {
         /* lava-lamp drift: speed breathes, can briefly reverse at high drift */
         const mod = 1 + b.drift * Math.sin(ph.t*b.dFq + b.dPh);
-        b.angle += dt * b.speed * mod;
+        b.angle += dts * b.speed * mod;
       }
     }
   }
@@ -847,12 +937,17 @@ function frame(now){
   gl.uniform1f(U.uRing, S.ring);
   gl.uniform1f(U.uTube, S.tube);
   gl.uniform1f(U.uFlat, S.flat);
-  /* Tri-lobe / Taper dials are maximums: Shape morph swings the live value
-     between (1 - morph) x max and max, on offset clocks */
-  const mLobe  = 1 - S.morph * (0.5 + 0.5*Math.sin(ph.morph));
+  /* Tri-lobe / Taper dials are maximums: Shape morph swings the live values
+     between (1 - morph) x max and max. Each of the three corners runs on its
+     own slightly-detuned clock, so they swell and relax independently — the
+     shape flows like liquid instead of crossfading */
+  const wMax = Math.min(S.lobe * 3.0, 0.8);
+  const CR = [1.0, 0.83, 1.19], CO = [0, 2.4, 4.4];
+  const cw = CR.map((r, i) =>
+    wMax * (1 - S.morph * (0.5 + 0.5*Math.sin(ph.morph*r + CO[i]))));
+  gl.uniform3f(U.uCornerW, cw[0], cw[1], cw[2]);
   const mTaper = 1 - S.morph * (0.5 + 0.5*Math.sin(ph.morph*0.77 + 1.9));
   gl.uniform1f(U.uTaper, S.taper * mTaper);
-  gl.uniform1f(U.uLobe, S.lobe * mLobe);
   gl.uniform1f(U.uOrganic, S.wob);
   gl.uniform1f(U.uInk, S.ink * 8.0);
   gl.uniform1f(U.uGravity, S.gravity);
@@ -865,6 +960,12 @@ function frame(now){
   gl.uniform3fv(U.uBg, [S.bg*1.002, S.bg, S.bg*0.998]);
   gl.uniform1f(U.uSoft, S.soft);
   gl.uniform1f(U.uJitter, (frameN % 64) * 0.618);
+  gl.uniform1f(U.uBgMode, bgMode);
+  {
+    const ca = canvas.width / canvas.height, ta = texW / texH;
+    const sc = ta > ca ? [ca/ta, 1] : [1, ta/ca];
+    gl.uniform2f(U.uTexScale, sc[0], sc[1]);
+  }
   gl.uniform1i(U.uBlobN, n);
   gl.uniform4fv(U.uBlobA, blobA);
   gl.uniform3fv(U.uBlobAbs, blobAbs);

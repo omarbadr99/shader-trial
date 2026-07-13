@@ -149,6 +149,68 @@
     <div class="ctl"><label>Glare <b id="v-glare"></b></label>
       <input type="range" id="glare" min="0" max="1" step="0.01"></div>
 
+    <div class="sec">OPTICAL SHELL V1</div>
+
+    <div class="ctl"><label style="justify-content:flex-start; gap:6px; cursor:pointer">
+      <input type="checkbox" id="optv1"> Optical Shell V1</label></div>
+
+    <div class="ctl"><label style="justify-content:flex-start; gap:6px; cursor:pointer">
+      <input type="checkbox" id="refrfull"> Full refraction (off = fast)</label></div>
+
+    <div class="ctl"><label>Exposure <b id="v-exposure"></b></label>
+      <input type="range" id="exposure" min="0.6" max="1.8" step="0.01"></div>
+
+    <div class="ctl"><label>Highlight rolloff <b id="v-rolloff"></b></label>
+      <input type="range" id="rolloff" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Shadow lift <b id="v-lift"></b></label>
+      <input type="range" id="lift" min="0" max="0.06" step="0.001"></div>
+
+    <div class="ctl"><label>Shell thickness <b id="v-shellth"></b></label>
+      <input type="range" id="shellth" min="0.06" max="0.45" step="0.005"></div>
+
+    <div class="ctl"><label>Shell clarity <b id="v-shellcl"></b></label>
+      <input type="range" id="shellcl" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Core edge softness <b id="v-coresoft"></b></label>
+      <input type="range" id="coresoft" min="0.03" max="0.5" step="0.005"></div>
+
+    <div class="ctl"><label>Fresnel strength <b id="v-fresstr"></b></label>
+      <input type="range" id="fresstr" min="0" max="2" step="0.01"></div>
+
+    <div class="ctl"><label>Fresnel F0 <b id="v-fresf0"></b></label>
+      <input type="range" id="fresf0" min="0.01" max="0.09" step="0.002"></div>
+
+    <div class="ctl"><label>Reflection strength <b id="v-reflstr"></b></label>
+      <input type="range" id="reflstr" min="0" max="2" step="0.01"></div>
+
+    <div class="ctl"><label>Studio rotation <b id="v-studiorot"></b></label>
+      <input type="range" id="studiorot" min="0" max="6.28" step="0.01"></div>
+
+    <div class="ctl"><label>Strip width <b id="v-stripw"></b></label>
+      <input type="range" id="stripw" min="0.05" max="0.6" step="0.005"></div>
+
+    <div class="ctl"><label>Strip softness <b id="v-strips"></b></label>
+      <input type="range" id="strips" min="0.02" max="0.5" step="0.005"></div>
+
+    <div class="ctl"><label>Curvature response <b id="v-curvresp"></b></label>
+      <input type="range" id="curvresp" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Highlight width <b id="v-hiwidth"></b></label>
+      <input type="range" id="hiwidth" min="0.02" max="0.3" step="0.005"></div>
+
+    <div class="ctl"><label>Highlight intensity <b id="v-hiint"></b></label>
+      <input type="range" id="hiint" min="0" max="2" step="0.01"></div>
+
+    <div class="ctl"><label>IOR <b id="v-ior"></b></label>
+      <input type="range" id="ior" min="1.0" max="1.6" step="0.005"></div>
+
+    <div class="ctl"><label>Refraction strength <b id="v-refrstr"></b></label>
+      <input type="range" id="refrstr" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Dispersion <b id="v-disp"></b></label>
+      <input type="range" id="disp" min="0" max="0.05" step="0.001"></div>
+
     <div class="sec">MOTION — rigid, never noisy</div>
 
     <div class="ctl"><label>Overall speed <b id="v-speed"></b></label>
@@ -416,6 +478,71 @@ vec3 calcNormal(vec3 p){
 float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
 float hash3(vec3 p){ return fract(sin(dot(p, vec3(17.1,31.7,7.13)))*43758.5453); }
 
+/* ==================== OPTICAL SHELL V1 ====================
+   Reversible: everything below only runs when uOptV1 > 0.5.
+   Lighting/volume math in LINEAR color, ACES-fitted tone map,
+   manual linear->sRGB at the end (the default WebGL2 backbuffer
+   performs NO automatic sRGB conversion, so gamma is applied
+   exactly once). */
+uniform float uOptV1;
+uniform float uExposure, uRolloff, uLift;          // color pipeline
+uniform float uShellTh, uShellCl, uCoreSoft;       // protected clear wall
+uniform float uFresStr, uF0;                       // Schlick fresnel
+uniform float uReflStr, uStudioRot, uStripW, uStripSoft;  // studio env
+uniform float uCurvResp, uHiWidth, uHiInt;         // curvature-aware highlight
+uniform float uIOR, uRefrStr, uDisp;               // refraction v1
+uniform float uRefrFull;                           // 1 = full two-interface march
+
+vec3 toLin(vec3 c){ return pow(max(c, vec3(0.0)), vec3(2.2)); }
+vec3 toSRGB(vec3 c){ return pow(max(c, vec3(0.0)), vec3(1.0/2.2)); }
+vec3 acesFit(vec3 x){
+  return clamp((x*(2.51*x + 0.03))/(x*(2.43*x + 0.59) + 0.14), 0.0, 1.0);
+}
+
+float band(float x, float c, float halfW, float soft){
+  return 1.0 - smoothstep(halfW, halfW + max(soft, 0.01), abs(x - c));
+}
+
+/* Procedural studio environment, sampled by WORLD direction — reflections
+   track the SDF normal, the view ray and the camera orbit, never the ring
+   angle or screen UV. Contents: broad cool-gray field brightening upward,
+   one large soft strip light, one narrower brighter strip, and a very
+   subtle cyan region for the restrained edge fringe. bandGain lets the
+   highlight-intensity dial scale the strips without graying the field. */
+vec3 envStudio(vec3 dir, float rough, float bandGain){
+  vec3 d = normalize(dir);
+  d.xz = rot2(d.xz, uStudioRot);
+  vec3 col = mix(vec3(0.30, 0.325, 0.365), vec3(0.86, 0.89, 0.94),
+                 smoothstep(-0.5, 0.85, d.y));
+  float xwin = smoothstep(-0.15, 0.45, 0.85 - abs(d.x));
+  float b1 = band(d.y, 0.42, uStripW,      uStripSoft + rough);
+  float b2 = band(d.y, 0.66, uStripW*0.35, uStripSoft*0.5 + rough*0.8);
+  col += b1 * xwin * vec3(0.75, 0.77, 0.80) * bandGain;
+  col += b2 * xwin * vec3(1.55, 1.60, 1.68) * bandGain;
+  float cy = 1.0 - smoothstep(0.25, 0.85, length(vec2(d.x + 0.62, d.y + 0.42)));
+  col += cy * vec3(-0.02, 0.055, 0.10);
+  return max(col, vec3(0.0));
+}
+
+/* normal + mean-curvature estimate from the SAME four tetrahedral taps.
+   The tap sum is a discrete Laplacian of the SDF, which for a distance
+   field approximates mean curvature; we divide out the conservative
+   uSafe*uFlat scale so kappa is in true 1/world-units. Approximation, not
+   exact differential geometry — good enough to widen/narrow a highlight. */
+vec4 nrmCurv(vec3 p, float eps){
+  vec2 e = vec2(eps, -eps);
+  float d1 = map(p + e.xyy), d2 = map(p + e.yyx),
+        d3 = map(p + e.yxy), d4 = map(p + e.xxx);
+  vec3 n = normalize(e.xyy*d1 + e.yyx*d2 + e.yxy*d3 + e.xxx*d4);
+  float kappa = (d1 + d2 + d3 + d4) * 0.25 / (eps*eps * uSafe * uFlat);
+  return vec4(n, kappa);
+}
+
+vec3 refrSafe(vec3 I, vec3 N, float eta){
+  vec3 r = refract(I, N, eta);
+  return dot(r, r) < 0.5 ? reflect(I, N) : r;   // total internal reflection
+}
+
 /* per-channel optical depth of the liquid at a point + how "core" it is */
 vec3 inkOD(vec3 p, out float coreW){
   vec2 ps   = rot2(p.xy, -uSpinPhase);
@@ -447,16 +574,30 @@ vec3 inkOD(vec3 p, out float coreW){
     dens += B.w * g;
   }
 
-  /* ink gravity: the liquid is pulled toward the ring's center — tails and
-     thin washes pack against the inner wall, but where a blob is dense it
-     floods the whole tube width, like the reference */
   float rad   = clamp(q.x / r, -1.0, 1.0);    // -1 inner edge .. +1 outer edge
   float gravW = smoothstep(0.85, -0.55, rad);
   float flood = smoothstep(0.35, 1.1, dens);
-  coreW *= mix(1.0, mix(gravW, 1.0, flood), uGravity);
 
-  /* faint cool tint of the material itself — only a whisper, so the
-     ink-free shell stays clean white-blue and the blobs read distinctly */
+  if (uOptV1 > 0.5){
+    /* -------- protected clear wall (V1) --------
+       Two explicit, independently controllable masks. coreMask reaches
+       zero at qn = 1-uShellTh, strictly BEFORE the surface; gravity and
+       flood may redistribute density inside the core but are multiplied
+       by coreMask afterwards, so concentrated ink can approach the shell
+       yet can never paint the silhouette. shellMask covers the clear wall
+       band and stays visible at any liquid density. */
+    float coreEdge  = 1.0 - uShellTh;
+    float coreMask  = smoothstep(coreEdge, coreEdge - max(uCoreSoft, 0.03), qn);
+    float shellMask = smoothstep(coreEdge - 0.06, coreEdge + 0.12, qn);
+    float gravity = mix(1.0, mix(gravW, 1.0, flood), uGravity);
+    coreW = coreMask;                          // out: drives wall scattering
+    return od * coreMask * gravity
+         + vec3(0.020, 0.014, 0.008) * (1.0 - uShellCl) * shellMask
+         + vec3(0.010, 0.007, 0.004);          // faint cool body tint
+  }
+
+  /* -------- legacy behaviour (V1 off) -------- */
+  coreW *= mix(1.0, mix(gravW, 1.0, flood), uGravity);
   return od * coreW + vec3(0.015, 0.011, 0.006);
 }
 
@@ -508,9 +649,159 @@ void main(){
 
   float wpp = tAt * 1.24 / uRes.y;
   float aa  = uSoft * wpp;
-  float alpha = hit ? 1.0 : clamp(1.0 - minD/aa, 0.0, 1.0);
+  /* V1: smoothstep silhouette transition on a world-space pixel estimate —
+     crisp, derivative-free, no blurred outer edge. Legacy keeps its ramp. */
+  float alpha;
+  if (uOptV1 > 0.5) alpha = hit ? 1.0 : 1.0 - smoothstep(0.0, max(aa, wpp*1.2), minD);
+  else              alpha = hit ? 1.0 : clamp(1.0 - minD/aa, 0.0, 1.0);
 
-  vec3 col = bg;
+  vec3 col;
+  if (uOptV1 > 0.5){
+    /* =================== OPTICAL SHELL V1 =================== */
+    vec3 colL = toLin(bg);                        // linear working space
+    if (alpha > 0.0){
+      float t0 = hit ? t : tAt;
+      vec3 p = ro + rd*t0;
+
+      /* adaptive normal epsilon: follows the world-space pixel footprint
+         (so highlights stay stable at any zoom/DPR) and grows slightly
+         with fluid deformation; clamped to a sane range */
+      float wppH = t0 * 1.24 / uRes.y;
+      float epsN = clamp(0.6*wppH, 0.0012, 0.005) * (1.0 + 0.5*uFluid);
+      vec4 nc = nrmCurv(p, epsN);
+      vec3 n = nc.xyz;
+
+      /* curvature -> highlight width: kappa relative to the nominal tube
+         curvature 1/uTube; tight bends narrow the ribbon, flat stretches
+         broaden it, smoothly */
+      float kRel = clamp(nc.w * max(uTube, 0.05), 0.25, 3.0);
+      float rough = clamp(uHiWidth * mix(1.0, 1.0/kRel, uCurvResp), 0.015, 0.4);
+
+      /* refraction in (Snell via refract(); TIR-safe) */
+      vec3 rdIn = normalize(mix(rd, refrSafe(rd, n, 1.0/uIOR), uRefrStr));
+      vec3 pIn = p + rdIn*0.004;
+
+      /* interior chord. FULL: march + bisect along the refracted ray, so
+         the liquid is integrated on the bent path (internal parallax).
+         FAST: straight view-ray chord — cheaper, loses that parallax. */
+      float Lr; vec3 cDir; vec3 cOrig;
+      if (uRefrFull > 0.5){
+        float ti = 0.012, tiPrev = 0.0;
+        for (int i=0; i<48; i++){
+          float d = map(pIn + rdIn*ti);
+          if (d > 0.0015) break;
+          tiPrev = ti;
+          ti += max(-d/(uSafe*uFlat), 0.012);
+        }
+        float a2 = tiPrev, b2 = ti;
+        for (int j2i=0; j2i<4; j2i++){
+          float m2 = 0.5*(a2+b2);
+          if (map(pIn + rdIn*m2) < 0.0) a2 = m2; else b2 = m2;
+        }
+        Lr = 0.5*(a2+b2);
+        cDir = rdIn; cOrig = pIn;
+      } else {
+        float tEx2 = t0 + 0.004, tePrev = t0 + 0.004;
+        for (int i=0; i<60; i++){
+          float d = map(ro + rd*tEx2);
+          if (d > 0.0015) break;
+          tePrev = tEx2;
+          tEx2 += max(-d/(uSafe*uFlat), 0.012);
+        }
+        float a2 = tePrev, b2 = tEx2;
+        for (int j2i=0; j2i<4; j2i++){
+          float m2 = 0.5*(a2+b2);
+          if (map(ro + rd*m2) < 0.0) a2 = m2; else b2 = m2;
+        }
+        Lr = 0.5*(a2+b2) - t0;
+        cDir = rd; cOrig = ro + rd*t0;
+      }
+
+      /* volume integral — NO artificial per-depth weighting: absorption is
+         integrated density x travelled distance only (Beer-Lambert) */
+      vec3 od = vec3(0.0);
+      float shellT = 0.0;
+      {
+        const int NS = 22;
+        float st = Lr/float(NS);
+        float j = hash(gl_FragCoord.xy + vec2(uJitter, uJitter*1.7));
+        for (int i=0; i<NS; i++){
+          vec3 q2 = cOrig + cDir*((float(i)+j)*st);
+          float cw;
+          od += inkOD(q2, cw) * st;
+          shellT += (1.0 - cw) * st;
+        }
+      }
+      /* absorption recalibrated for LINEAR working space (coefficients
+         were authored against a gamma-space display) */
+      vec3 inkT = exp(-od * uInk * 2.4);
+
+      /* refined exit interface + second refraction (leaving the medium) */
+      vec3 pEx = cOrig + cDir*Lr;
+      vec3 nEx = nrmCurv(pEx, epsN).xyz;
+      vec3 rdOut = normalize(mix(rd, refrSafe(cDir, -nEx, uIOR), uRefrStr));
+
+      /* restrained wall scattering — shell stays clear, never milky */
+      float milk = (1.0 - exp(-(Lr*uFrost*0.9 + shellT*uFrost*2.4)))
+                 * mix(0.55, 0.18, uShellCl);
+      vec3 milkL = vec3(0.78, 0.84, 0.93);
+
+      /* transmitted light: backdrop plate (refraction-shifted UV — a
+         documented approximation, the plate is screen-space) + the studio
+         env through the glass with per-channel IOR for a restrained
+         cyan-blue dispersion fringe */
+      vec3 seenL;
+      if (uBgMode > 0.5){
+        vec2 duv = (rdOut.xy - rd.xy) * 0.35 * uTexScale;
+        float blurR = 0.003 + 0.04*milk;
+        float j2 = hash(gl_FragCoord.yx + uJitter);
+        vec3 acc = vec3(0.0);
+        for (int i=0; i<8; i++){
+          float an = (float(i) + j2)*0.7854;
+          acc += texture(uBgTex, suv + duv + vec2(cos(an), sin(an))*blurR).rgb;
+        }
+        seenL = toLin(acc*0.125);
+      } else {
+        seenL = toLin(bg);
+      }
+      vec3 envT;
+      if (uDisp > 0.0002){
+        vec3 rdR = normalize(mix(rd, refrSafe(rd, n, 1.0/max(uIOR - uDisp, 1.001)), uRefrStr));
+        vec3 rdB = normalize(mix(rd, refrSafe(rd, n, 1.0/(uIOR + uDisp)), uRefrStr));
+        envT = vec3(envStudio(rdR,   0.5, 0.6).r,
+                    envStudio(rdOut, 0.5, 0.6).g,
+                    envStudio(rdB,   0.5, 0.6).b);
+      } else {
+        envT = envStudio(rdOut, 0.5, 0.6);
+      }
+      seenL = mix(seenL, envT, 0.22);
+
+      vec3 trans = mix(seenL * inkT, milkL * exp(-od * uInk * 1.7), milk);
+
+      /* gentle form shading on the transmission — pale areas keep cool-gray
+         dimension instead of clipping to white */
+      vec3 ldv = normalize(vec3(-0.28, 0.86, 0.42));
+      float form = 0.5 + 0.5*dot(n, ldv);
+      trans *= mix(1.0, 0.70 + 0.42*form, uLight*0.8);
+
+      /* Schlick fresnel BLENDS studio reflection with transmission — the
+         old additive fixed-tint rim is gone entirely on this path */
+      float ndv = clamp(dot(n, -rd), 0.0, 1.0);
+      float F = clamp((uF0 + (1.0 - uF0)*pow(1.0 - ndv, 5.0)) * uFresStr, 0.0, 1.0);
+      vec3 refl = envStudio(reflect(rd, n), rough, uHiInt) * uReflStr;
+      vec3 surf = mix(trans, refl, F);
+
+      colL = mix(colL, surf, alpha);
+    }
+    /* ACES-fitted tone map (blendable shoulder) + shadow lift, then a
+       single manual linear->sRGB conversion (backbuffer is non-sRGB) */
+    vec3 xe = max(colL, 0.0) * uExposure;
+    vec3 mapd = mix(clamp(xe, 0.0, 1.0), acesFit(xe), uRolloff);
+    mapd = mapd*(1.0 - uLift) + vec3(uLift);
+    col = toSRGB(mapd);
+  } else {
+  /* ====================== LEGACY PATH ====================== */
+  col = bg;
   if (alpha > 0.0){
     float t0 = hit ? t : tAt;
     vec3 p = ro + rd*t0;
@@ -615,6 +906,7 @@ void main(){
 
     col = mix(bg, body, alpha);
   }
+  }
 
   float g = hash(gl_FragCoord.xy) - 0.5;
   col += g * uGrain * (0.35 + 0.65*alpha);
@@ -641,7 +933,10 @@ const U = {};
  "uCornerW","uStretch","uStretchA","uOrganic","uInk","uGravity","uLight","uGlare","uFrost","uWall","uSpeckle",
  "uGrain","uBg","uSoft","uRing","uJitter","uBgTex","uBgMode","uTexScale",
  "uFluid","uCenterAmt","uThickAmt","uDepthAmt","uGeoLag","uPMean","uPVar",
- "uSafe","uPressN","uPressB","uBlobN","uBlobA","uBlobAbs"]
+ "uSafe","uPressN","uPressB","uBlobN","uBlobA","uBlobAbs",
+ "uOptV1","uExposure","uRolloff","uLift","uShellTh","uShellCl","uCoreSoft",
+ "uFresStr","uF0","uReflStr","uStudioRot","uStripW","uStripSoft",
+ "uCurvResp","uHiWidth","uHiInt","uIOR","uRefrStr","uDisp","uRefrFull"]
  .forEach(n => U[n] = gl.getUniformLocation(prog, n));
 
 /* ============================================================
@@ -674,7 +969,12 @@ const PRESETS = {
              spin:0.16, tilt:0.45, tiltspd:1.0, wob:0.22, wobspd:0.5,
              morph:0.85, morphspd:0.45,
              ring:1.0, lobe:0.17, stretch:0.14, tube:0.2, flat:0.7, taper:0.2, zoom:1.18,
-             frost:0.5, wall:0.2, speckle:0.3, soft:0.9, grain:0.02, bg:0.945 },
+             frost:0.18, wall:0.2, speckle:0, soft:0.9, grain:0, bg:0.955,
+             optv1:1, refrfull:1, exposure:1.15, rolloff:0.85, lift:0.015,
+             shellth:0.16, shellcl:0.7, coresoft:0.18,
+             fresstr:1.0, fresf0:0.04, reflstr:1.0, studiorot:0.5,
+             stripw:0.22, strips:0.16, curvresp:0.6, hiwidth:0.09, hiint:1.0,
+             ior:1.45, refrstr:0.7, disp:0.012 },
     blobs: [
       { color:"#101c33", size:0.55, speed:0.32,  amt:1.0,  tail:0.6, drift:0.45 },
       { color:"#33507a", size:0.85, speed:-0.15, amt:0.4,  tail:0.5, drift:0.7 },
@@ -686,7 +986,8 @@ const PRESETS = {
              spin:0.12, tilt:0.4, tiltspd:0.8, wob:0.35, wobspd:0.8,
              morph:0.7, morphspd:0.7,
              ring:1.0, lobe:0.15, stretch:0.1, tube:0.34, flat:0.78, taper:0.1, zoom:1.0,
-             frost:0.9, wall:0.26, speckle:0.6, soft:1.6, grain:0.03, bg:0.945 },
+             frost:0.9, wall:0.26, speckle:0.6, soft:1.6, grain:0.03, bg:0.945,
+             optv1:0, refrfull:1 },
     blobs: [
       { color:"#1c2f56", size:0.5,  speed:0.25,  amt:0.9, tail:0.55, drift:0.6 },
       { color:"#7a3352", size:0.42, speed:-0.2,  amt:0.7, tail:0.5,  drift:0.8 },
@@ -699,7 +1000,8 @@ const PRESETS = {
              spin:0.1, tilt:0.35, tiltspd:0.7, wob:0.15, wobspd:0.5,
              morph:0.5, morphspd:0.4,
              ring:1.0, lobe:0.16, stretch:0.08, tube:0.28, flat:0.75, taper:0.1, zoom:1.0,
-             frost:1.0, wall:0.3, speckle:0.4, soft:2.2, grain:0.025, bg:0.95 },
+             frost:1.0, wall:0.3, speckle:0.4, soft:2.2, grain:0.025, bg:0.95,
+             optv1:0, refrfull:1 },
     blobs: [
       { color:"#3d5a80", size:0.9, speed:0.22, amt:0.55, tail:0.5, drift:0.5 },
     ],
@@ -709,7 +1011,11 @@ const PRESETS = {
 const DIALS = ["ink","gravity","fluid","fcenter","fthick","fdepth","flag","fsmooth",
                "light","glare","speed","spin","tilt","tiltspd","wob",
                "wobspd","morph","morphspd","ring","lobe","stretch","tube","flat","taper",
-               "zoom","frost","wall","speckle","soft","grain","bg"];
+               "zoom","frost","wall","speckle","soft","grain","bg",
+               "optv1","refrfull","exposure","rolloff","lift","shellth","shellcl",
+               "coresoft","fresstr","fresf0","reflstr","studiorot","stripw","strips",
+               "curvresp","hiwidth","hiint","ior","refrstr","disp"];
+const CHECKS = new Set(["optv1","refrfull"]);
 
 function hex2rgb(h){ return [1,3,5].map(i => parseInt(h.slice(i, i+2), 16)/255); }
 function absorb(hex){
@@ -802,7 +1108,8 @@ function applyPreset(p){
     if (S[id] == null) S[id] = PRESETS.reference.dials[id];
   for (const id of DIALS){
     const el = document.getElementById(id);
-    el.value = S[id];
+    if (CHECKS.has(id)) el.checked = S[id] > 0.5;
+    else el.value = S[id];
     const lbl = document.getElementById("v-"+id);
     if (lbl) lbl.textContent = fmt(S[id]);
   }
@@ -862,11 +1169,16 @@ document.getElementById("saveName").addEventListener("keydown", e => {
 renderPresets();
 
 for (const id of DIALS){
-  document.getElementById(id).addEventListener("input", e => {
-    S[id] = +e.target.value;
-    const lbl = document.getElementById("v-"+id);
-    if (lbl) lbl.textContent = fmt(S[id]);
-  });
+  const el = document.getElementById(id);
+  if (CHECKS.has(id)){
+    el.addEventListener("change", e => { S[id] = e.target.checked ? 1 : 0; });
+  } else {
+    el.addEventListener("input", e => {
+      S[id] = +e.target.value;
+      const lbl = document.getElementById("v-"+id);
+      if (lbl) lbl.textContent = fmt(S[id]);
+    });
+  }
 }
 
 let paused = false;
@@ -1118,6 +1430,27 @@ function frame(now){
   gl.uniform1i(U.uBlobN, n);
   gl.uniform4fv(U.uBlobA, blobA);
   gl.uniform3fv(U.uBlobAbs, blobAbs);
+
+  gl.uniform1f(U.uOptV1, S.optv1);
+  gl.uniform1f(U.uExposure, S.exposure);
+  gl.uniform1f(U.uRolloff, S.rolloff);
+  gl.uniform1f(U.uLift, S.lift);
+  gl.uniform1f(U.uShellTh, S.shellth);
+  gl.uniform1f(U.uShellCl, S.shellcl);
+  gl.uniform1f(U.uCoreSoft, S.coresoft);
+  gl.uniform1f(U.uFresStr, S.fresstr);
+  gl.uniform1f(U.uF0, S.fresf0);
+  gl.uniform1f(U.uReflStr, S.reflstr);
+  gl.uniform1f(U.uStudioRot, S.studiorot);
+  gl.uniform1f(U.uStripW, S.stripw);
+  gl.uniform1f(U.uStripSoft, S.strips);
+  gl.uniform1f(U.uCurvResp, S.curvresp);
+  gl.uniform1f(U.uHiWidth, S.hiwidth);
+  gl.uniform1f(U.uHiInt, S.hiint);
+  gl.uniform1f(U.uIOR, S.ior);
+  gl.uniform1f(U.uRefrStr, S.refrstr);
+  gl.uniform1f(U.uDisp, S.disp);
+  gl.uniform1f(U.uRefrFull, S.refrfull);
 
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   requestAnimationFrame(frame);

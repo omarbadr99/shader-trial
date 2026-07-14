@@ -475,8 +475,27 @@ vec3 calcNormal(vec3 p){
     e.yxy*map(p+e.yxy) + e.xxx*map(p+e.xxx));
 }
 
-float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
-float hash3(vec3 p){ return fract(sin(dot(p, vec3(17.1,31.7,7.13)))*43758.5453); }
+/* integer bit-mixing hashes: exact on every GPU. The previous sine-based
+   form loses precision at large fragment coordinates on real hardware and
+   collapses into correlated diagonal stripes — which showed up as dashed
+   hairlines across the tube. */
+float hash(vec2 p){
+  uvec2 v = floatBitsToUint(p);
+  v = v*1664525u + 1013904223u;
+  v.x += v.y*1664525u; v.y += v.x*1664525u;
+  v ^= v >> 16u;
+  v.x += v.y*1664525u; v.y += v.x*1664525u;
+  v ^= v >> 16u;
+  return float(v.x ^ v.y) * 2.3283064365386963e-10;
+}
+float hash3(vec3 p){
+  uvec3 v = floatBitsToUint(p);
+  v = v*1664525u + 1013904223u;
+  v.x += v.y*v.z; v.y += v.z*v.x; v.z += v.x*v.y;
+  v ^= v >> 16u;
+  v.x += v.y*v.z;
+  return float(v.x) * 2.3283064365386963e-10;
+}
 
 /* ==================== OPTICAL SHELL V1 ====================
    Reversible: everything below only runs when uOptV1 > 0.5.

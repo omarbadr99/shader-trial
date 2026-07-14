@@ -95,6 +95,7 @@
 <div class="corner">
   Organic O — frosted shell, liquid blobs
   <small>drag to orbit · shader trial 02 v2</small>
+  <small id="gpuInfo" style="opacity:.4"></small>
 </div>
 
 <div class="panel" id="panel">
@@ -150,6 +151,50 @@
       <input type="range" id="glare" min="0" max="1" step="0.01"></div>
 
     <div class="sec">OPTICAL SHELL V1</div>
+
+    <div class="ctl"><label>Debug view</label>
+      <select id="debug" style="font:inherit; border:1.5px solid #111; background:none; padding:3px 4px;">
+        <option value="0">Final</option>
+        <option value="1">Constant hit color</option>
+        <option value="2">Front hit distance</option>
+        <option value="3">Front SDF residual</option>
+        <option value="4">Front march step count</option>
+        <option value="5">Exit distance</option>
+        <option value="6">Exit SDF residual</option>
+        <option value="7">Exit march step count</option>
+        <option value="8">Chord length L</option>
+        <option value="9">Front normal</option>
+        <option value="10">Exit normal</option>
+        <option value="11">Reflection direction</option>
+        <option value="12">Refraction direction</option>
+        <option value="13">TIR mask</option>
+        <option value="14">Fresnel</option>
+        <option value="15">Curvature estimate</option>
+        <option value="16">Raw studio environment</option>
+        <option value="17">Filtered studio environment</option>
+        <option value="18">Shell mask</option>
+        <option value="19">Core mask</option>
+        <option value="20">Integrated optical density</option>
+        <option value="21">Pre-tone-map color</option>
+        <option value="22">Invalid-number mask</option>
+      </select></div>
+
+    <div class="ctl"><label>Isolate (binary test)</label>
+      <select id="iso" style="font:inherit; border:1.5px solid #111; background:none; padding:3px 4px;">
+        <option value="0">None (Final path)</option>
+        <option value="1">1 · Constant material</option>
+        <option value="2">2 · No volume integration</option>
+        <option value="3">3 · No refraction</option>
+        <option value="4">4 · No reflection</option>
+        <option value="5">5 · Constant environment</option>
+        <option value="6">6 · No dispersion</option>
+        <option value="7">7 · Hard-TIR fallback</option>
+        <option value="8">8 · Exit normal = front normal</option>
+        <option value="9">9 · No curvature highlight</option>
+        <option value="10">10 · Restore fwidth (repro)</option>
+        <option value="11">11 · No hash/jitter/noise</option>
+        <option value="12">12 · No tone map</option>
+      </select></div>
 
     <div class="ctl"><label style="justify-content:flex-start; gap:6px; cursor:pointer">
       <input type="checkbox" id="optv1"> Optical Shell V1</label></div>
@@ -479,6 +524,8 @@ vec3 calcNormal(vec3 p){
    form loses precision at large fragment coordinates on real hardware and
    collapses into correlated diagonal stripes — which showed up as dashed
    hairlines across the tube. */
+bool inv1(float v){ return isnan(v) || isinf(v); }
+bool inv3(vec3 v){ return any(isnan(v)) || any(isinf(v)); }
 float hash(vec2 p){
   uvec2 v = floatBitsToUint(p);
   v = v*1664525u + 1013904223u;
@@ -511,6 +558,8 @@ uniform float uReflStr, uStudioRot, uStripW, uStripSoft;  // studio env
 uniform float uCurvResp, uHiWidth, uHiInt;         // curvature-aware highlight
 uniform float uIOR, uRefrStr, uDisp;               // refraction v1
 uniform float uRefrFull;                           // 1 = full two-interface march
+uniform int   uDebug;    // 0 = Final, else a diagnostic buffer
+uniform int   uIso;      // 0 = none, else a binary-isolation test
 
 vec3 toLin(vec3 c){ return pow(max(c, vec3(0.0)), vec3(2.2)); }
 vec3 toSRGB(vec3 c){ return pow(max(c, vec3(0.0)), vec3(1.0/2.2)); }
@@ -654,8 +703,10 @@ void main(){
   float t = max(0.0, camD - 2.6);
   float tPrev = t;
   float minD = 1e9, tAt = t;
+  float frontSteps = 0.0;
   bool hit = false;
   for (int i=0; i<170; i++){
+    frontSteps += 1.0;
     vec3 p = ro + rd*t;
     float d = map(p);
     if (d < minD){ minD = d; tAt = t; }
@@ -689,76 +740,73 @@ void main(){
   if (uOptV1 > 0.5) alpha = hit ? 1.0 : 1.0 - smoothstep(0.0, max(aa, wpp*1.2), minD);
   else              alpha = hit ? 1.0 : clamp(1.0 - minD/aa, 0.0, 1.0);
 
+  /* diagnostic capture vars (set inside the V1 branch) */
+  float dFsteps=frontSteps, dFresid=0.0, dEsteps=0.0, dEresid=0.0, dL=0.0;
+  float dTIR=0.0, dF=0.0, dKap=0.0, dShell=0.0, dCore=0.0, dT0=0.0;
+  vec3 dN=vec3(0.), dNEx=vec3(0.), dRefl=vec3(0.), dRefr=vec3(0.);
+  vec3 dEnvRaw=vec3(0.), dEnvFilt=vec3(0.), dOD=vec3(0.), dPre=vec3(0.);
+
   vec3 col;
   if (uOptV1 > 0.5){
     /* =================== OPTICAL SHELL V1 =================== */
     vec3 colL = toLin(bg);                        // linear working space
     if (alpha > 0.0){
       float t0 = hit ? t : tAt;
+      dT0 = t0;
+      dFresid = abs(map(ro + rd*t0));
       vec3 p = ro + rd*t0;
 
-      /* adaptive normal epsilon: follows the world-space pixel footprint
-         (so highlights stay stable at any zoom/DPR) and grows slightly
-         with fluid deformation; clamped to a sane range */
       float wppH = t0 * 1.24 / uRes.y;
       float epsN = clamp(0.6*wppH, 0.0012, 0.005) * (1.0 + 0.5*uFluid);
       vec4 nc = nrmCurv(p, epsN);
       vec3 n = nc.xyz;
+      dN = n; dKap = nc.w;
 
-      /* curvature -> highlight width: kappa relative to the nominal tube
-         curvature 1/uTube; tight bends narrow the ribbon, flat stretches
-         broaden it, smoothly */
       float kRel = clamp(nc.w * max(uTube, 0.05), 0.25, 3.0);
-      float rough = clamp(uHiWidth * mix(1.0, 1.0/kRel, uCurvResp), 0.015, 0.4);
+      float rough = (uIso==9) ? uHiWidth
+                   : clamp(uHiWidth * mix(1.0, 1.0/kRel, uCurvResp), 0.015, 0.4);
+      float noJ = (uIso==11) ? 0.0 : 1.0;
 
-      /* refraction in (Snell via refract(); TIR-safe) */
-      vec3 rdIn = normalize(mix(rd, refrSafe(rd, n, 1.0/uIOR), uRefrStr));
+      vec3 rdIn = (uIso==3) ? rd
+                 : normalize(mix(rd, refrSafe(rd, n, 1.0/uIOR), uRefrStr));
       vec3 pIn = p + rdIn*0.004;
 
-      /* interior chord. FULL: march + bisect along the refracted ray, so
-         the liquid is integrated on the bent path (internal parallax).
-         FAST: straight view-ray chord — cheaper, loses that parallax. */
-      float Lr; vec3 cDir; vec3 cOrig;
-      if (uRefrFull > 0.5){
+      float Lr; vec3 cDir; vec3 cOrig; float eSteps=0.0;
+      if (uRefrFull > 0.5 && uIso != 3){
         float ti = 0.012, tiPrev = 0.0;
         for (int i=0; i<48; i++){
-          float d = map(pIn + rdIn*ti);
-          if (d > 0.0015) break;
-          tiPrev = ti;
-          ti += max(-d/(uSafe*uFlat), 0.012);
+          float dd = map(pIn + rdIn*ti); eSteps += 1.0;
+          if (dd > 0.0015) break;
+          tiPrev = ti; ti += max(-dd/(uSafe*uFlat), 0.012);
         }
         float a2 = tiPrev, b2 = ti;
         for (int j2i=0; j2i<6; j2i++){
           float m2 = 0.5*(a2+b2);
           if (map(pIn + rdIn*m2) < 0.0) a2 = m2; else b2 = m2;
         }
-        Lr = 0.5*(a2+b2);
-        cDir = rdIn; cOrig = pIn;
+        Lr = 0.5*(a2+b2); cDir = rdIn; cOrig = pIn;
       } else {
         float tEx2 = t0 + 0.004, tePrev = t0 + 0.004;
         for (int i=0; i<60; i++){
-          float d = map(ro + rd*tEx2);
-          if (d > 0.0015) break;
-          tePrev = tEx2;
-          tEx2 += max(-d/(uSafe*uFlat), 0.012);
+          float dd = map(ro + rd*tEx2); eSteps += 1.0;
+          if (dd > 0.0015) break;
+          tePrev = tEx2; tEx2 += max(-dd/(uSafe*uFlat), 0.012);
         }
         float a2 = tePrev, b2 = tEx2;
         for (int j2i=0; j2i<6; j2i++){
           float m2 = 0.5*(a2+b2);
           if (map(ro + rd*m2) < 0.0) a2 = m2; else b2 = m2;
         }
-        Lr = 0.5*(a2+b2) - t0;
-        cDir = rd; cOrig = ro + rd*t0;
+        Lr = 0.5*(a2+b2) - t0; cDir = rd; cOrig = ro + rd*t0;
       }
+      dEsteps = eSteps; dL = Lr;
 
-      /* volume integral — NO artificial per-depth weighting: absorption is
-         integrated density x travelled distance only (Beer-Lambert) */
       vec3 od = vec3(0.0);
       float shellT = 0.0;
       {
         const int NS = 22;
         float st = Lr/float(NS);
-        float j = hash(gl_FragCoord.xy + vec2(uJitter, uJitter*1.7));
+        float j = noJ * hash(gl_FragCoord.xy + vec2(uJitter, uJitter*1.7));
         for (int i=0; i<NS; i++){
           vec3 q2 = cOrig + cDir*((float(i)+j)*st);
           float cw;
@@ -766,32 +814,34 @@ void main(){
           shellT += (1.0 - cw) * st;
         }
       }
-      /* absorption recalibrated for LINEAR working space (coefficients
-         were authored against a gamma-space display) */
+      if (uIso==2) od = vec3(0.0);
+      dOD = od;
       vec3 inkT = exp(-od * uInk * 2.4);
 
-      /* refined exit interface + second refraction (leaving the medium).
-         Exit normal uses a doubled epsilon: the exit point carries march
-         residue, and a smoother normal keeps the TIR zone from stippling. */
       vec3 pEx = cOrig + cDir*Lr;
-      vec3 nEx = nrmCurv(pEx, epsN*2.0).xyz;
-      vec4 exG = refrSmooth(cDir, -nEx, uIOR);
-      vec3 rdOut = normalize(mix(rd, exG.xyz, uRefrStr));
+      dEresid = abs(map(pEx));
+      vec3 nEx = (uIso==8) ? n : nrmCurv(pEx, epsN*2.0).xyz;
+      dNEx = nEx;
+      vec4 exG;
+      if (uIso==7){
+        vec3 rr = refract(cDir, -nEx, uIOR);
+        exG = (dot(rr,rr) < 0.5) ? vec4(reflect(cDir,-nEx),0.0) : vec4(normalize(rr),1.0);
+      } else {
+        exG = refrSmooth(cDir, -nEx, uIOR);
+      }
+      dTIR = exG.w;
+      vec3 rdOut = (uIso==3) ? rd : normalize(mix(rd, exG.xyz, uRefrStr));
+      dRefr = rdOut;
 
-      /* restrained wall scattering — shell stays clear, never milky */
       float milk = (1.0 - exp(-(Lr*uFrost*0.9 + shellT*uFrost*2.4)))
                  * mix(0.55, 0.18, uShellCl);
       vec3 milkL = vec3(0.78, 0.84, 0.93);
 
-      /* transmitted light: backdrop plate (refraction-shifted UV — a
-         documented approximation, the plate is screen-space) + the studio
-         env through the glass with per-channel IOR for a restrained
-         cyan-blue dispersion fringe */
       vec3 seenL;
       if (uBgMode > 0.5){
         vec2 duv = (rdOut.xy - rd.xy) * 0.35 * uTexScale;
         float blurR = 0.003 + 0.04*milk;
-        float j2 = hash(gl_FragCoord.yx + uJitter);
+        float j2 = noJ * hash(gl_FragCoord.yx + uJitter);
         vec3 acc = vec3(0.0);
         for (int i=0; i<8; i++){
           float an = (float(i) + j2)*0.7854;
@@ -801,46 +851,58 @@ void main(){
       } else {
         seenL = toLin(bg);
       }
-      float aaT = length(fwidth(rdOut)) * 2.2 + 0.03;
+
+      /* env AA width: FIXED conservative default (no derivatives — avoids
+         the undefined-derivative UB across the divergent exit march). The
+         'fwidth (repro)' isolation restores the derivative form to A/B it. */
+      float aaFixed = 0.05;
+      float aaT = (uIso==10) ? (length(fwidth(rdOut))*2.2 + 0.03) : (aaFixed + 0.02);
+      vec3 envRawT = envStudio(rdOut, 0.0, 0.6);
       vec3 envT;
-      if (uDisp > 0.0002){
-        vec3 dR = normalize(rdOut + n*uDisp);   // subtle chromatic splay,
-        vec3 dB = normalize(rdOut - n*uDisp);   // shares one soft interface
-        envT = vec3(envStudio(dR,    aaT, 0.6).r,
+      if (uIso==5){ envT = vec3(0.6); }
+      else if (uDisp > 0.0002 && uIso != 6){
+        vec3 dRc = normalize(rdOut + n*uDisp);
+        vec3 dBc = normalize(rdOut - n*uDisp);
+        envT = vec3(envStudio(dRc,   aaT, 0.6).r,
                     envStudio(rdOut, aaT, 0.6).g,
-                    envStudio(dB,    aaT, 0.6).b);
+                    envStudio(dBc,   aaT, 0.6).b);
       } else {
         envT = envStudio(rdOut, aaT, 0.6);
       }
+      dEnvRaw = envRawT; dEnvFilt = envT;
       seenL = mix(seenL, envT, 0.22);
 
       vec3 trans = mix(seenL * inkT, milkL * exp(-od * uInk * 1.7), milk);
 
-      /* gentle form shading on the transmission — pale areas keep cool-gray
-         dimension instead of clipping to white */
       vec3 ldv = normalize(vec3(-0.28, 0.86, 0.42));
       float form = 0.5 + 0.5*dot(n, ldv);
       trans *= mix(1.0, 0.70 + 0.42*form, uLight*0.8);
 
-      /* Schlick fresnel BLENDS studio reflection with transmission — the
-         old additive fixed-tint rim is gone entirely on this path */
       float ndv = clamp(dot(n, -rd), 0.0, 1.0);
-      float F = clamp((uF0 + (1.0 - uF0)*pow(1.0 - ndv, 5.0)) * uFresStr, 0.0, 1.0);
-      /* screen-space AA: soften the env by how fast the reflected direction
-         moves per pixel, so studio-strip edges never collapse to hairlines */
+      float F = (uIso==4) ? 0.0
+               : clamp((uF0 + (1.0 - uF0)*pow(1.0 - ndv, 5.0)) * uFresStr, 0.0, 1.0);
+      dF = F;
       vec3 Rr = reflect(rd, n);
-      float aaR = length(fwidth(Rr)) * 2.2;
-      vec3 refl = envStudio(Rr, max(rough, aaR), uHiInt) * uReflStr;
+      float aaR = (uIso==10) ? (length(fwidth(Rr))*2.2) : aaFixed;
+      vec3 refl = (uIso==5) ? vec3(0.6)*uReflStr
+                 : envStudio(Rr, max(rough, aaR), uHiInt) * uReflStr;
+      dRefl = Rr;
       vec3 surf = mix(trans, refl, F);
+      if (uIso==1) surf = vec3(0.35, 0.40, 0.50);
+
+      { float cwM; inkOD(cOrig + cDir*(Lr*0.5), cwM); dCore = cwM; dShell = clamp(1.0-cwM, 0.0, 1.0); }
 
       colL = mix(colL, surf, alpha);
     }
-    /* ACES-fitted tone map (blendable shoulder) + shadow lift, then a
-       single manual linear->sRGB conversion (backbuffer is non-sRGB) */
-    vec3 xe = max(colL, 0.0) * uExposure;
-    vec3 mapd = mix(clamp(xe, 0.0, 1.0), acesFit(xe), uRolloff);
-    mapd = mapd*(1.0 - uLift) + vec3(uLift);
-    col = toSRGB(mapd);
+    dPre = colL;
+    if (uIso==12){
+      col = toSRGB(clamp(colL, 0.0, 1.0));
+    } else {
+      vec3 xe = max(colL, 0.0) * uExposure;
+      vec3 mapd = mix(clamp(xe, 0.0, 1.0), acesFit(xe), uRolloff);
+      mapd = mapd*(1.0 - uLift) + vec3(uLift);
+      col = toSRGB(mapd);
+    }
   } else {
   /* ====================== LEGACY PATH ====================== */
   col = bg;
@@ -950,6 +1012,39 @@ void main(){
   }
   }
 
+  if (uDebug > 0){
+    bool bad = inv1(dFresid)||inv1(dEsteps)||inv1(dEresid)||inv1(dL)||inv1(dTIR)
+             ||inv1(dF)||inv1(dKap)||inv1(dShell)||inv1(dCore)
+             ||inv3(dN)||inv3(dNEx)||inv3(dRefl)||inv3(dRefr)
+             ||inv3(dEnvRaw)||inv3(dEnvFilt)||inv3(dOD)||inv3(dPre);
+    if (bad){ O = vec4(1.0, 0.0, 1.0, 1.0); return; }
+    if (uDebug == 22){ O = vec4(0.0, 0.0, 0.0, 1.0); return; }
+    vec3 dc = vec3(0.0);
+    float camD2 = 8.0/uZoom;
+    if      (uDebug==1)  dc = alpha>0.0 ? vec3(0.55) : vec3(0.05);
+    else if (uDebug==2)  dc = vec3(clamp((dT0-(camD2-2.6))/5.2, 0.0, 1.0));
+    else if (uDebug==3)  dc = vec3(clamp(dFresid*1000.0, 0.0, 1.0));
+    else if (uDebug==4)  dc = vec3(clamp(dFsteps/170.0, 0.0, 1.0));
+    else if (uDebug==5)  dc = vec3(clamp((dT0+dL-(camD2-2.6))/5.2, 0.0, 1.0));
+    else if (uDebug==6)  dc = vec3(clamp(dEresid*500.0, 0.0, 1.0));
+    else if (uDebug==7)  dc = vec3(clamp(dEsteps/60.0, 0.0, 1.0));
+    else if (uDebug==8)  dc = vec3(clamp(dL*1.5, 0.0, 1.0));
+    else if (uDebug==9)  dc = 0.5 + 0.5*dN;
+    else if (uDebug==10) dc = 0.5 + 0.5*dNEx;
+    else if (uDebug==11) dc = 0.5 + 0.5*dRefl;
+    else if (uDebug==12) dc = 0.5 + 0.5*dRefr;
+    else if (uDebug==13) dc = vec3(dTIR);
+    else if (uDebug==14) dc = vec3(dF);
+    else if (uDebug==15) dc = 0.5 + 0.5*vec3(clamp(dKap*0.5, -1.0, 1.0));
+    else if (uDebug==16) dc = clamp(dEnvRaw, 0.0, 1.0);
+    else if (uDebug==17) dc = clamp(dEnvFilt, 0.0, 1.0);
+    else if (uDebug==18) dc = vec3(dShell);
+    else if (uDebug==19) dc = vec3(dCore);
+    else if (uDebug==20) dc = clamp(dOD*0.3, 0.0, 1.0);
+    else if (uDebug==21) dc = toSRGB(clamp(dPre, 0.0, 1.0));
+    O = vec4(dc, 1.0); return;
+  }
+
   float g = hash(gl_FragCoord.xy) - 0.5;
   col += g * uGrain * (0.35 + 0.65*alpha);
 
@@ -978,7 +1073,7 @@ const U = {};
  "uSafe","uPressN","uPressB","uBlobN","uBlobA","uBlobAbs",
  "uOptV1","uExposure","uRolloff","uLift","uShellTh","uShellCl","uCoreSoft",
  "uFresStr","uF0","uReflStr","uStudioRot","uStripW","uStripSoft",
- "uCurvResp","uHiWidth","uHiInt","uIOR","uRefrStr","uDisp","uRefrFull"]
+ "uCurvResp","uHiWidth","uHiInt","uIOR","uRefrStr","uDisp","uRefrFull","uDebug","uIso"]
  .forEach(n => U[n] = gl.getUniformLocation(prog, n));
 
 /* ============================================================
@@ -1238,6 +1333,10 @@ document.getElementById("panelHead").addEventListener("click", () => {
     panel.classList.contains("closed") ? "+" : "—";
 });
 
+S.debug = 0; S.iso = 0;
+document.getElementById("debug").addEventListener("change", e => { S.debug = +e.target.value; });
+document.getElementById("iso").addEventListener("change", e => { S.iso = +e.target.value; });
+
 applyPreset(PRESETS.reference);
 
 /* ============================================================
@@ -1253,6 +1352,19 @@ gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 gl.uniform1i(U.uBgTex, 0);
+
+/* GPU / DPR / resolution readout (deliverable: self-documenting screenshots) */
+try {
+  const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+  const rend = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : "renderer hidden";
+  const upd = () => {
+    document.getElementById("gpuInfo").textContent =
+      (rend.length > 42 ? rend.slice(0,42)+"…" : rend) +
+      " · DPR " + (Math.min(devicePixelRatio||1,2)) +
+      " · " + canvas.width + "×" + canvas.height;
+  };
+  upd(); addEventListener("resize", () => setTimeout(upd, 100));
+} catch(e){}
 
 let bgMode = 0, texW = 1, texH = 1;
 function setTexImage(src, w, h){
@@ -1493,6 +1605,8 @@ function frame(now){
   gl.uniform1f(U.uRefrStr, S.refrstr);
   gl.uniform1f(U.uDisp, S.disp);
   gl.uniform1f(U.uRefrFull, S.refrfull);
+  gl.uniform1i(U.uDebug, S.debug | 0);
+  gl.uniform1i(U.uIso, S.iso | 0);
 
   gl.drawArrays(gl.TRIANGLES, 0, 3);
   requestAnimationFrame(frame);

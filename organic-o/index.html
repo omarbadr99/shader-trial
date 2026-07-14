@@ -543,6 +543,21 @@ vec3 refrSafe(vec3 I, vec3 N, float eta){
   return dot(r, r) < 0.5 ? reflect(I, N) : r;   // total internal reflection
 }
 
+/* smooth crossover at the total-internal-reflection boundary: instead of a
+   hard transmit/reflect switch at the critical angle (which draws a sharp
+   line across the tube, tripled by dispersion), blend refraction into
+   internal reflection over a small angular window. xyz = direction,
+   w = transmission weight (0 at/inside TIR). */
+vec4 refrSmooth(vec3 I, vec3 N, float eta){
+  float ci = clamp(-dot(I, N), 0.0, 1.0);
+  float k = 1.0 - eta*eta*(1.0 - ci*ci);
+  vec3 rf = reflect(I, N);
+  if (k <= 0.0) return vec4(rf, 0.0);
+  vec3 rr = normalize(eta*I + (eta*ci - sqrt(k))*N);
+  float w = smoothstep(0.0, 0.06, k);
+  return vec4(normalize(mix(rf, rr, w)), w);
+}
+
 /* per-channel optical depth of the liquid at a point + how "core" it is */
 vec3 inkOD(vec3 p, out float coreW){
   vec2 ps   = rot2(p.xy, -uSpinPhase);
@@ -694,7 +709,7 @@ void main(){
           ti += max(-d/(uSafe*uFlat), 0.012);
         }
         float a2 = tiPrev, b2 = ti;
-        for (int j2i=0; j2i<4; j2i++){
+        for (int j2i=0; j2i<6; j2i++){
           float m2 = 0.5*(a2+b2);
           if (map(pIn + rdIn*m2) < 0.0) a2 = m2; else b2 = m2;
         }
@@ -709,7 +724,7 @@ void main(){
           tEx2 += max(-d/(uSafe*uFlat), 0.012);
         }
         float a2 = tePrev, b2 = tEx2;
-        for (int j2i=0; j2i<4; j2i++){
+        for (int j2i=0; j2i<6; j2i++){
           float m2 = 0.5*(a2+b2);
           if (map(ro + rd*m2) < 0.0) a2 = m2; else b2 = m2;
         }
@@ -736,10 +751,13 @@ void main(){
          were authored against a gamma-space display) */
       vec3 inkT = exp(-od * uInk * 2.4);
 
-      /* refined exit interface + second refraction (leaving the medium) */
+      /* refined exit interface + second refraction (leaving the medium).
+         Exit normal uses a doubled epsilon: the exit point carries march
+         residue, and a smoother normal keeps the TIR zone from stippling. */
       vec3 pEx = cOrig + cDir*Lr;
-      vec3 nEx = nrmCurv(pEx, epsN).xyz;
-      vec3 rdOut = normalize(mix(rd, refrSafe(cDir, -nEx, uIOR), uRefrStr));
+      vec3 nEx = nrmCurv(pEx, epsN*2.0).xyz;
+      vec4 exG = refrSmooth(cDir, -nEx, uIOR);
+      vec3 rdOut = normalize(mix(rd, exG.xyz, uRefrStr));
 
       /* restrained wall scattering — shell stays clear, never milky */
       float milk = (1.0 - exp(-(Lr*uFrost*0.9 + shellT*uFrost*2.4)))
@@ -766,8 +784,10 @@ void main(){
       }
       vec3 envT;
       if (uDisp > 0.0002){
-        vec3 rdR = normalize(mix(rd, refrSafe(rd, n, 1.0/max(uIOR - uDisp, 1.001)), uRefrStr));
-        vec3 rdB = normalize(mix(rd, refrSafe(rd, n, 1.0/(uIOR + uDisp)), uRefrStr));
+        vec4 exR = refrSmooth(cDir, -nEx, max(uIOR - uDisp, 1.001));
+        vec4 exB = refrSmooth(cDir, -nEx, uIOR + uDisp);
+        vec3 rdR = normalize(mix(rd, exR.xyz, uRefrStr));
+        vec3 rdB = normalize(mix(rd, exB.xyz, uRefrStr));
         envT = vec3(envStudio(rdR,   0.5, 0.6).r,
                     envStudio(rdOut, 0.5, 0.6).g,
                     envStudio(rdB,   0.5, 0.6).b);

@@ -1,0 +1,1727 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Organic O — frosted shell, liquid blobs</title>
+<style>
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html,body{ height:100%; overflow:hidden; }
+  body{
+    background:#eceeef;
+    font-family:"Helvetica Neue", Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  canvas#gl{ position:fixed; inset:0; width:100%; height:100%; display:block; cursor:grab; }
+  canvas#gl.dragging{ cursor:grabbing; }
+
+  .corner{
+    position:fixed; left:16px; top:14px; z-index:40;
+    font-size:12px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:#333;
+    pointer-events:none;
+  }
+  .corner small{ display:block; font-weight:500; letter-spacing:.04em; text-transform:none; opacity:.55; margin-top:3px; }
+
+  /* ---------- control panel ---------- */
+  .panel{
+    position:fixed; top:12px; right:12px; z-index:50;
+    width:258px; max-height:calc(100vh - 24px); overflow:auto;
+    background:rgba(252,251,248,.93);
+    backdrop-filter:blur(6px);
+    border:1.5px solid #111;
+    font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size:11px;
+    color:#111;
+    user-select:none;
+  }
+  .panel-head{
+    display:flex; justify-content:space-between; align-items:center;
+    padding:8px 10px;
+    border-bottom:1.5px solid #111;
+    font-weight:700; letter-spacing:.1em; cursor:pointer;
+    position:sticky; top:0; background:rgba(252,251,248,.97); z-index:2;
+  }
+  .panel-body{ padding:10px 12px 12px; display:grid; gap:9px; }
+  .panel.closed .panel-body{ display:none; }
+  .sec{
+    font-weight:700; letter-spacing:.12em; font-size:10px; opacity:.6;
+    border-top:1px solid rgba(17,17,17,.25); padding-top:8px; margin-top:2px;
+  }
+  .ctl{ display:grid; gap:3px; }
+  .ctl label{ display:flex; justify-content:space-between; }
+  .ctl label b{ font-weight:400; opacity:.55; }
+  .ctl input[type=range]{
+    width:100%; height:14px; appearance:none; background:transparent; cursor:pointer;
+  }
+  .ctl input[type=range]::-webkit-slider-runnable-track{ height:2px; background:#111; }
+  .ctl input[type=range]::-webkit-slider-thumb{
+    appearance:none; width:11px; height:11px; border-radius:50%;
+    background:#111; margin-top:-4.5px;
+  }
+  .ctl input[type=range]::-moz-range-track{ height:2px; background:#111; }
+  .ctl input[type=range]::-moz-range-thumb{ width:11px; height:11px; border:0; border-radius:50%; background:#111; }
+  .btnrow{ display:flex; gap:6px; flex-wrap:wrap; }
+  .btnrow button, .blob-add{
+    font:inherit; background:none; border:1.5px solid #111; padding:3px 8px; cursor:pointer;
+  }
+  .btnrow button:hover, .blob-add:hover{ background:#111; color:#f2efe8; }
+
+  /* ---------- blob rows ---------- */
+  .blob{
+    border:1px solid rgba(17,17,17,.4);
+    padding:7px 8px 8px; display:grid; gap:5px;
+  }
+  .blob-top{ display:flex; align-items:center; gap:7px; }
+  .blob-top input[type=color]{
+    width:26px; height:20px; padding:0; border:1.5px solid #111; background:none; cursor:pointer; flex:none;
+  }
+  .blob-top .bname{ font-weight:700; letter-spacing:.06em; flex:1; }
+  .blob-top label{ display:flex; align-items:center; gap:4px; opacity:.8; cursor:pointer; }
+  .blob-top .bx{
+    border:0; background:none; font:inherit; font-weight:700; cursor:pointer; padding:0 2px; opacity:.6;
+  }
+  .blob-top .bx:hover{ opacity:1; }
+  .brow{ display:grid; grid-template-columns:52px 1fr 30px; align-items:center; gap:6px; }
+  .brow span{ opacity:.6; }
+  .brow output{ text-align:right; opacity:.55; }
+  .blob-add{ width:100%; }
+  .hint{ opacity:.5; line-height:1.4; }
+</style>
+
+<style id="scroll-demo">
+  html,body{ height:auto; overflow-y:auto; overflow-x:hidden; }
+  .panel{ display:none !important; }
+  .corner{ z-index:6; mix-blend-mode:multiply; }
+  .scrollwrap{ position:relative; z-index:10; pointer-events:none; }
+  .sect{ min-height:100vh; display:flex; align-items:center; }
+  .sect.right{ justify-content:flex-end; }
+  .sect.center{ justify-content:center; text-align:center; }
+  .card{
+    pointer-events:auto; max-width:32ch; margin:0 8vw;
+    font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; color:#0d1526;
+  }
+  .card .eyebrow{ font-size:12px; font-weight:700; letter-spacing:.22em; text-transform:uppercase; opacity:.5; }
+  .card h2{ font-size:clamp(30px,5vw,64px); font-weight:800; letter-spacing:-.03em; line-height:1.02; margin:14px 0 12px; text-wrap:balance; }
+  .card p{ font-size:clamp(15px,1.4vw,19px); line-height:1.5; opacity:.72; }
+  .scrollhint{
+    position:fixed; left:50%; bottom:22px; transform:translateX(-50%); z-index:20;
+    font:600 11px/1 ui-monospace, Menlo, monospace; letter-spacing:.18em; text-transform:uppercase;
+    color:#0d1526; opacity:.45; pointer-events:none; animation:bob 1.8s ease-in-out infinite;
+  }
+  @keyframes bob{ 0%,100%{ transform:translateX(-50%) translateY(0);} 50%{ transform:translateX(-50%) translateY(6px);} }
+  @media (prefers-reduced-motion: reduce){ .scrollhint{ animation:none; } }
+</style>
+</head>
+<body>
+
+<canvas id="gl"></canvas>
+<div class="scrollwrap">
+  <section class="sect"><div class="card">
+    <div class="eyebrow">Organic O · Section 01</div>
+    <h2>A living object in your header.</h2>
+    <p>The ring is a real-time WebGL shader — drag it to orbit. Everything you see is a value the page can animate. Scroll to watch it respond.</p>
+  </div></section>
+
+  <section class="sect right"><div class="card">
+    <div class="eyebrow">Section 02 · Zoom &amp; hue</div>
+    <h2>Scroll drives the uniforms.</h2>
+    <p>Your scroll position becomes a 0→1 number. That number interpolates zoom, ring size, orbit angle and the ink colours between keyframes — the GPU just redraws.</p>
+  </div></section>
+
+  <section class="sect"><div class="card">
+    <div class="eyebrow">Section 03 · Orbit &amp; morph</div>
+    <h2>Position, direction, form.</h2>
+    <p>As you pass each section the O re-orients, its hole opens and closes, and the liquid shifts. No video, no sprite sheet — one shader reacting to one scalar.</p>
+  </div></section>
+
+  <section class="sect center"><div class="card">
+    <div class="eyebrow">Section 04 · The point</div>
+    <h2>This is how it ships.</h2>
+    <p>Fixed canvas behind the content, scroll progress mapped to shader parameters. The same wiring works in Framer, Webflow or plain HTML.</p>
+  </div></section>
+</div>
+<div class="scrollhint">Scroll ↓</div>
+
+
+<div class="corner">
+  Organic O — frosted shell, liquid blobs
+  <small>drag to orbit · shader trial 02 v2</small>
+  <small id="gpuInfo" style="opacity:.4"></small>
+</div>
+
+<div class="panel" id="panel">
+  <div class="panel-head" id="panelHead"><span>INK RING</span><span id="panelToggle">—</span></div>
+  <div class="panel-body">
+
+    <div class="btnrow" id="presets"></div>
+    <div class="ctl" id="saveRow" style="display:none">
+      <label>Preset name</label>
+      <div style="display:flex; gap:6px">
+        <input type="text" id="saveName" maxlength="18"
+               style="flex:1; min-width:0; font:inherit; border:1.5px solid #111; background:none; padding:3px 6px;">
+        <button id="saveOk" style="font:inherit; background:none; border:1.5px solid #111; padding:3px 8px; cursor:pointer;">OK</button>
+      </div>
+    </div>
+
+    <div class="sec">BLOBS — the liquid inside</div>
+    <div id="blobList" style="display:grid; gap:7px;"></div>
+    <button class="blob-add" id="blobAdd">+ Add blob</button>
+
+    <div class="ctl"><label>Ink amount (all) <b id="v-ink"></b></label>
+      <input type="range" id="ink" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Ink gravity <b id="v-gravity"></b></label>
+      <input type="range" id="gravity" min="0" max="1" step="0.01"></div>
+
+    <div class="sec">FLUID COUPLING — liquid moves the shell</div>
+
+    <div class="ctl"><label>Fluid coupling <b id="v-fluid"></b></label>
+      <input type="range" id="fluid" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Centreline response <b id="v-fcenter"></b></label>
+      <input type="range" id="fcenter" min="0" max="0.35" step="0.005"></div>
+
+    <div class="ctl"><label>Thickness response <b id="v-fthick"></b></label>
+      <input type="range" id="fthick" min="0" max="0.9" step="0.01"></div>
+
+    <div class="ctl"><label>Depth response <b id="v-fdepth"></b></label>
+      <input type="range" id="fdepth" min="0" max="0.4" step="0.005"></div>
+
+    <div class="ctl"><label>Geometry lag <b id="v-flag"></b></label>
+      <input type="range" id="flag" min="0" max="1.2" step="0.01"></div>
+
+    <div class="ctl"><label>Pressure smoothing <b id="v-fsmooth"></b></label>
+      <input type="range" id="fsmooth" min="0" max="1" step="0.01"></div>
+
+    <div class="sec">LIGHT</div>
+
+    <div class="ctl"><label>Form light <b id="v-light"></b></label>
+      <input type="range" id="light" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Glare <b id="v-glare"></b></label>
+      <input type="range" id="glare" min="0" max="1" step="0.01"></div>
+
+    <div class="sec">OPTICAL SHELL V1</div>
+
+    <div class="ctl"><label>Debug view</label>
+      <select id="debug" style="font:inherit; border:1.5px solid #111; background:none; padding:3px 4px;">
+        <option value="0">Final</option>
+        <option value="1">Constant hit color</option>
+        <option value="2">Front hit distance</option>
+        <option value="3">Front SDF residual</option>
+        <option value="4">Front march step count</option>
+        <option value="5">Exit distance</option>
+        <option value="6">Exit SDF residual</option>
+        <option value="7">Exit march step count</option>
+        <option value="8">Chord length L</option>
+        <option value="9">Front normal</option>
+        <option value="10">Exit normal</option>
+        <option value="11">Reflection direction</option>
+        <option value="12">Refraction direction</option>
+        <option value="13">TIR mask</option>
+        <option value="14">Fresnel</option>
+        <option value="15">Curvature estimate</option>
+        <option value="16">Raw studio environment</option>
+        <option value="17">Filtered studio environment</option>
+        <option value="18">Shell mask</option>
+        <option value="19">Core mask</option>
+        <option value="20">Integrated optical density</option>
+        <option value="21">Pre-tone-map color</option>
+        <option value="22">Invalid-number mask</option>
+      </select></div>
+
+    <div class="ctl"><label>Isolate (binary test)</label>
+      <select id="iso" style="font:inherit; border:1.5px solid #111; background:none; padding:3px 4px;">
+        <option value="0">None (Final path)</option>
+        <option value="1">1 · Constant material</option>
+        <option value="2">2 · No volume integration</option>
+        <option value="3">3 · No refraction</option>
+        <option value="4">4 · No reflection</option>
+        <option value="5">5 · Constant environment</option>
+        <option value="6">6 · No dispersion</option>
+        <option value="7">7 · Hard-TIR fallback</option>
+        <option value="8">8 · Exit normal = front normal</option>
+        <option value="9">9 · No curvature highlight</option>
+        <option value="10">10 · Restore fwidth (repro)</option>
+        <option value="11">11 · No hash/jitter/noise</option>
+        <option value="12">12 · No tone map</option>
+      </select></div>
+
+    <div class="ctl"><label style="justify-content:flex-start; gap:6px; cursor:pointer">
+      <input type="checkbox" id="optv1"> Optical Shell V1</label></div>
+
+    <div class="ctl"><label style="justify-content:flex-start; gap:6px; cursor:pointer">
+      <input type="checkbox" id="refrfull"> Full refraction (off = fast)</label></div>
+
+    <div class="ctl"><label>Exposure <b id="v-exposure"></b></label>
+      <input type="range" id="exposure" min="0.6" max="1.8" step="0.01"></div>
+
+    <div class="ctl"><label>Highlight rolloff <b id="v-rolloff"></b></label>
+      <input type="range" id="rolloff" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Shadow lift <b id="v-lift"></b></label>
+      <input type="range" id="lift" min="0" max="0.06" step="0.001"></div>
+
+    <div class="ctl"><label>Shell thickness <b id="v-shellth"></b></label>
+      <input type="range" id="shellth" min="0.06" max="0.45" step="0.005"></div>
+
+    <div class="ctl"><label>Shell clarity <b id="v-shellcl"></b></label>
+      <input type="range" id="shellcl" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Core edge softness <b id="v-coresoft"></b></label>
+      <input type="range" id="coresoft" min="0.03" max="0.5" step="0.005"></div>
+
+    <div class="ctl"><label>Fresnel strength <b id="v-fresstr"></b></label>
+      <input type="range" id="fresstr" min="0" max="2" step="0.01"></div>
+
+    <div class="ctl"><label>Fresnel F0 <b id="v-fresf0"></b></label>
+      <input type="range" id="fresf0" min="0.01" max="0.09" step="0.002"></div>
+
+    <div class="ctl"><label>Reflection strength <b id="v-reflstr"></b></label>
+      <input type="range" id="reflstr" min="0" max="2" step="0.01"></div>
+
+    <div class="ctl"><label>Studio rotation <b id="v-studiorot"></b></label>
+      <input type="range" id="studiorot" min="0" max="6.28" step="0.01"></div>
+
+    <div class="ctl"><label>Strip width <b id="v-stripw"></b></label>
+      <input type="range" id="stripw" min="0.05" max="0.6" step="0.005"></div>
+
+    <div class="ctl"><label>Strip softness <b id="v-strips"></b></label>
+      <input type="range" id="strips" min="0.02" max="0.5" step="0.005"></div>
+
+    <div class="ctl"><label>Curvature response <b id="v-curvresp"></b></label>
+      <input type="range" id="curvresp" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Highlight width <b id="v-hiwidth"></b></label>
+      <input type="range" id="hiwidth" min="0.02" max="0.3" step="0.005"></div>
+
+    <div class="ctl"><label>Highlight intensity <b id="v-hiint"></b></label>
+      <input type="range" id="hiint" min="0" max="2" step="0.01"></div>
+
+    <div class="ctl"><label>IOR <b id="v-ior"></b></label>
+      <input type="range" id="ior" min="1.0" max="1.6" step="0.005"></div>
+
+    <div class="ctl"><label>Refraction strength <b id="v-refrstr"></b></label>
+      <input type="range" id="refrstr" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Dispersion <b id="v-disp"></b></label>
+      <input type="range" id="disp" min="0" max="0.05" step="0.001"></div>
+
+    <div class="sec">MOTION — rigid, never noisy</div>
+
+    <div class="ctl"><label>Overall speed <b id="v-speed"></b></label>
+      <input type="range" id="speed" min="0" max="10" step="0.05"></div>
+
+    <div class="ctl"><label>Spin <b id="v-spin"></b></label>
+      <input type="range" id="spin" min="-1" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Tilt sway <b id="v-tilt"></b></label>
+      <input type="range" id="tilt" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Tilt speed <b id="v-tiltspd"></b></label>
+      <input type="range" id="tiltspd" min="0" max="2" step="0.01"></div>
+
+    <div class="ctl"><label>Wobble <b id="v-wob"></b></label>
+      <input type="range" id="wob" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Wobble speed <b id="v-wobspd"></b></label>
+      <input type="range" id="wobspd" min="0" max="2" step="0.01"></div>
+
+    <div class="ctl"><label>Shape morph <b id="v-morph"></b></label>
+      <input type="range" id="morph" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Morph speed <b id="v-morphspd"></b></label>
+      <input type="range" id="morphspd" min="0" max="2" step="0.01"></div>
+
+    <div class="sec">SHAPE</div>
+
+    <div class="ctl"><label>Ring size <b id="v-ring"></b></label>
+      <input type="range" id="ring" min="0.35" max="1.35" step="0.01"></div>
+
+    <div class="ctl"><label>Tri-lobe <b id="v-lobe"></b></label>
+      <input type="range" id="lobe" min="0" max="0.3" step="0.005"></div>
+
+    <div class="ctl"><label>Stretch <b id="v-stretch"></b></label>
+      <input type="range" id="stretch" min="0" max="0.25" step="0.005"></div>
+
+    <div class="ctl"><label>Thickness <b id="v-tube"></b></label>
+      <input type="range" id="tube" min="0.12" max="0.45" step="0.005"></div>
+
+    <div class="ctl"><label>Flatten <b id="v-flat"></b></label>
+      <input type="range" id="flat" min="0.5" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Taper <b id="v-taper"></b></label>
+      <input type="range" id="taper" min="0" max="0.4" step="0.01"></div>
+
+    <div class="ctl"><label>Zoom <b id="v-zoom"></b></label>
+      <input type="range" id="zoom" min="0.5" max="2" step="0.01"></div>
+
+    <div class="sec">SHELL — frosted Y2K plastic</div>
+
+    <div class="ctl"><label>Backdrop — glass sees through it</label>
+      <div class="btnrow" id="bgmode">
+        <button data-m="flat">Flat</button>
+        <button data-m="grad">Gradient</button>
+        <button data-m="img">Image…</button>
+      </div>
+      <input type="file" id="bgfile" accept="image/*" style="display:none">
+    </div>
+
+    <div class="ctl"><label>Frost <b id="v-frost"></b></label>
+      <input type="range" id="frost" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Wall thickness <b id="v-wall"></b></label>
+      <input type="range" id="wall" min="0" max="0.45" step="0.01"></div>
+
+    <div class="ctl"><label>Speckle <b id="v-speckle"></b></label>
+      <input type="range" id="speckle" min="0" max="1" step="0.01"></div>
+
+    <div class="ctl"><label>Edge softness <b id="v-soft"></b></label>
+      <input type="range" id="soft" min="0.5" max="6" step="0.1"></div>
+
+    <div class="ctl"><label>Grain <b id="v-grain"></b></label>
+      <input type="range" id="grain" min="0" max="0.12" step="0.002"></div>
+
+    <div class="ctl"><label>Background <b id="v-bg"></b></label>
+      <input type="range" id="bg" min="0.8" max="1" step="0.005"></div>
+
+    <div class="btnrow">
+      <button id="pause">Pause</button>
+      <button id="reset">Reset view</button>
+    </div>
+
+    <div class="hint">Shell = frosted polycarbonate with real wall thickness; blobs are liquid
+    masses confined to the core, each with its own color, speed, tail and lava drift.
+    Geometry moves rigidly (spin + precessing tilt) — no surface noise.</div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* ============================================================
+   GL setup
+============================================================ */
+const canvas = document.getElementById("gl");
+const gl = canvas.getContext("webgl2", { antialias:false, alpha:false });
+if (!gl) document.body.innerHTML = "<p style='padding:2em'>WebGL2 required.</p>";
+
+const MAXB = 6;
+
+const VERT = `#version 300 es
+void main(){
+  vec2 v = vec2((gl_VertexID<<1)&2, gl_VertexID&2);
+  gl_Position = vec4(v*2.0-1.0, 0.0, 1.0);
+}`;
+
+const FRAG = `#version 300 es
+precision highp float;
+out vec4 O;
+
+#define MAXB ${MAXB}
+#define PI  3.14159265
+#define TAU 6.28318531
+
+uniform vec2  uRes;
+uniform float uYaw, uPitch;       // orbit: drag + precessing tilt (CPU)
+uniform float uSpinPhase;         // rigid in-plane rotation of the shape
+uniform float uOrgPhase;          // slow phase for the optional organic drift
+uniform float uZoom;
+uniform float uRing;              // ring radius — hole size, tube stays absolute
+uniform float uTube;              // tube radius (in-plane)
+uniform float uFlat;              // cross-section z-scale (flattened coin < 1)
+uniform float uTaper;             // tube radius variation, rotates with shape
+uniform vec3  uCornerW;           // per-corner circle->triangle blend (liquid morph)
+uniform float uStretch;           // anisotropic stretch of the whole form
+uniform float uStretchA;          // stretch axis angle (drifts slowly)
+uniform float uOrganic;           // small in-plane radius drift, default low
+uniform float uInk;               // global ink multiplier
+uniform float uGravity;           // ink pull toward the ring's center
+uniform float uLight;             // form-light strength (3D read)
+uniform float uGlare;             // area-light glare strength
+uniform float uFrost;             // shell scattering strength
+uniform float uWall;              // frosted wall thickness (fraction of tube radius)
+uniform float uSpeckle;           // micro speckle in the plastic
+uniform float uGrain;
+uniform vec3  uBg;
+uniform float uSoft;              // silhouette AA in pixels
+uniform float uJitter;            // per-frame dither for the volume integral
+uniform sampler2D uBgTex;         // backdrop image (see-through frost)
+uniform float uBgMode;            // 0 = flat color, 1 = texture
+uniform vec2  uTexScale;          // cover-fit scale for the backdrop
+
+uniform int   uBlobN;
+uniform vec4  uBlobA[MAXB];       // x angle, y half-width(rad), z tail(signed), w strength
+uniform vec3  uBlobAbs[MAXB];     // -log(color): per-channel absorption
+
+/* Ring in the xy-plane, facing camera. The ring path is a true 2D distance
+   field: a blend of a circle and a rounded equilateral triangle, so the
+   morph is always a clean convex shape — flat sides bowing gently outward,
+   three corners of uniform curvature, never lumps or dents. */
+
+vec2 rot2(vec2 v, float a){ float c=cos(a), s=sin(a); return mat2(c,-s,s,c)*v; }
+
+float sdEqTri(vec2 p, float r){
+  const float k = 1.7320508;
+  p.x = abs(p.x) - r;
+  p.y = p.y + r/k;
+  if (p.x + k*p.y > 0.0) p = vec2(p.x - k*p.y, -k*p.x - p.y)*0.5;
+  p.x -= clamp(p.x, -2.0*r, 0.0);
+  return -length(p)*sign(p.y);
+}
+
+/* signed distance from a shape-space point to the ring path.
+   Each of the three corners has its own circle->triangle weight, driven on
+   its own clock from the CPU — corners swell and relax independently, so
+   the morph reads as liquid flowing, never a mechanical crossfade. The
+   cos^2 masks at 120 degrees sum to a constant, so the field stays smooth. */
+float pathD(vec2 ps){
+  /* anisotropic stretch along a slowly drifting axis: the whole form is
+     elongated like pulled liquid, so it never reads as a regular polygon */
+  vec2 q = rot2(ps, -uStretchA);
+  q = vec2(q.x/(1.0 + uStretch), q.y*(1.0 + uStretch*0.7));
+  float dC = length(q) - uRing;               // circle -> stretched egg
+  float c  = 0.58 * uRing;                    // generous corner rounding
+  float s  = (uRing - c) * 1.1547;            // triangle sized to match footprint
+  float dT = sdEqTri(q, s) - c;               // soft rounded equilateral triangle
+  float a  = atan(q.y, q.x) - 1.5708;         // corners at 90, 210, 330 deg
+  float c0 = cos(a), c1 = cos(a - 2.0944), c2 = cos(a + 2.0944);
+  float w = (uCornerW.x*c0*c0 + uCornerW.y*c1*c1 + uCornerW.z*c2*c2) * 0.6667;
+  return mix(dC, dT, w) / (1.0 + uStretch);
+}
+
+float tubeR(float ths){
+  /* one-sided taper: thick on one side of the ring, slim opposite */
+  return uTube * (1.0 + uTaper * cos(ths + 0.4));
+}
+
+float zWave(float ths){
+  /* subtle out-of-plane twist — 3-fold only, so it keeps exactly 3 corners */
+  return uOrganic * 0.08 * uRing * sin(3.0*ths - uOrgPhase*1.3);
+}
+
+/* ---- fluid pressure: the liquid pushes the shell -----------------------
+   One shared angular field, sampled by BOTH map() (geometry) and inkOD()
+   (material), so deformation stays spatially locked to the visible liquid.
+   Evaluated in WORLD angle — the blobs' own coordinate space, NOT the
+   spin-rotated shape space, so a blob always deforms the part of the ring
+   it is visibly passing through.
+   Each blob contributes one broad, perfectly periodic raised-cosine lobe
+   (pow of cos — no wrap seam, no noise). Lobe width comes from blob size +
+   Pressure smoothing, precomputed on the CPU as an exponent.
+   Geometry trails the liquid: the three response channels sample the field
+   at increasing angular lags BEHIND each blob's direction of travel
+   (x = centreline, lag x1; y = thickness, lag x1.6; z = depth, lag x2.3),
+   so density arrives first, the centreline is pulled, thickness follows,
+   depth follows last, and the region relaxes as the blob leaves.
+   uPMean (numeric angular mean, CPU, 96 samples) centres the field to
+   zero mean: material is redistributed, never added. */
+uniform float uFluid;        // master coupling, 0 = legacy geometry
+uniform float uCenterAmt;    // centreline response
+uniform float uThickAmt;     // thickness response
+uniform float uDepthAmt;     // depth response
+uniform float uGeoLag;       // base angular lag, radians
+uniform float uPMean;        // angular mean of the raw field
+uniform float uPVar;         // angular variance (area compensation)
+uniform float uSafe;         // CPU-computed conservative march factor
+uniform int   uPressN;
+uniform vec4  uPressB[MAXB]; // x angle, y lobe exponent, z amplitude, w dir sign
+
+vec3 fluidP3(float th){
+  vec3 P = vec3(0.0);
+  for (int i=0; i<MAXB; i++){
+    if (i >= uPressN) break;
+    vec4 B = uPressB[i];
+    float d   = th - B.x;
+    float lag = uGeoLag * B.w;
+    P.x += B.z * pow(0.5 + 0.5*cos(d + lag),     B.y);
+    P.y += B.z * pow(0.5 + 0.5*cos(d + lag*1.6), B.y);
+    P.z += B.z * pow(0.5 + 0.5*cos(d + lag*2.3), B.y);
+  }
+  return P - vec3(uPMean);
+}
+
+/* local tube-radius factor with approximate area conservation: the pressure
+   is zero-mean (first-order stable) and the 1/sqrt(1+a^2 Var) term cancels
+   the second-order mean-area gain of (1+aP)^2, so the average cross-section
+   stays nearly constant while thickness redistributes */
+float thickF(float Pt){
+  float a = uFluid * uThickAmt;
+  return max(0.25, 1.0 + a*Pt) * inversesqrt(1.0 + a*a*uPVar);
+}
+
+float map(vec3 p){
+  vec2 ps = rot2(p.xy, -uSpinPhase);          // shape space (rigid spin)
+  float ths = atan(ps.y, ps.x);
+  float thw = atan(p.y, p.x);                 // world angle — pressure space
+  vec3 P3 = uFluid > 0.0005 ? fluidP3(thw) : vec3(0.0);
+  /* centreline moves radially outward under positive pressure — this
+     shifts silhouette AND hole together, it does not inflate the tube */
+  float pd = pathD(ps) - uFluid*uCenterAmt*P3.x;
+  /* pressure-driven depth, separate from the fixed 3-fold zWave */
+  float z  = p.z + zWave(ths) + uFluid*uDepthAmt*uRing*P3.z;
+  vec2 q = vec2(pd, z/uFlat);
+  return (length(q) - tubeR(ths)*thickF(P3.y)) * uSafe * uFlat;
+}
+
+vec3 calcNormal(vec3 p){
+  const vec2 e = vec2(0.0018, -0.0018);
+  return normalize(
+    e.xyy*map(p+e.xyy) + e.yyx*map(p+e.yyx) +
+    e.yxy*map(p+e.yxy) + e.xxx*map(p+e.xxx));
+}
+
+/* integer bit-mixing hashes: exact on every GPU. The previous sine-based
+   form loses precision at large fragment coordinates on real hardware and
+   collapses into correlated diagonal stripes — which showed up as dashed
+   hairlines across the tube. */
+bool inv1(float v){ return isnan(v) || isinf(v); }
+bool inv3(vec3 v){ return any(isnan(v)) || any(isinf(v)); }
+float hash(vec2 p){
+  uvec2 v = floatBitsToUint(p);
+  v = v*1664525u + 1013904223u;
+  v.x += v.y*1664525u; v.y += v.x*1664525u;
+  v ^= v >> 16u;
+  v.x += v.y*1664525u; v.y += v.x*1664525u;
+  v ^= v >> 16u;
+  return float(v.x ^ v.y) * 2.3283064365386963e-10;
+}
+float hash3(vec3 p){
+  uvec3 v = floatBitsToUint(p);
+  v = v*1664525u + 1013904223u;
+  v.x += v.y*v.z; v.y += v.z*v.x; v.z += v.x*v.y;
+  v ^= v >> 16u;
+  v.x += v.y*v.z;
+  return float(v.x) * 2.3283064365386963e-10;
+}
+
+/* ==================== OPTICAL SHELL V1 ====================
+   Reversible: everything below only runs when uOptV1 > 0.5.
+   Lighting/volume math in LINEAR color, ACES-fitted tone map,
+   manual linear->sRGB at the end (the default WebGL2 backbuffer
+   performs NO automatic sRGB conversion, so gamma is applied
+   exactly once). */
+uniform float uOptV1;
+uniform float uExposure, uRolloff, uLift;          // color pipeline
+uniform float uShellTh, uShellCl, uCoreSoft;       // protected clear wall
+uniform float uFresStr, uF0;                       // Schlick fresnel
+uniform float uReflStr, uStudioRot, uStripW, uStripSoft;  // studio env
+uniform float uCurvResp, uHiWidth, uHiInt;         // curvature-aware highlight
+uniform float uIOR, uRefrStr, uDisp;               // refraction v1
+uniform float uRefrFull;                           // 1 = full two-interface march
+uniform int   uDebug;    // 0 = Final, else a diagnostic buffer
+uniform int   uIso;      // 0 = none, else a binary-isolation test
+
+vec3 toLin(vec3 c){ return pow(max(c, vec3(0.0)), vec3(2.2)); }
+vec3 toSRGB(vec3 c){ return pow(max(c, vec3(0.0)), vec3(1.0/2.2)); }
+vec3 acesFit(vec3 x){
+  return clamp((x*(2.51*x + 0.03))/(x*(2.43*x + 0.59) + 0.14), 0.0, 1.0);
+}
+
+float band(float x, float c, float halfW, float soft){
+  return 1.0 - smoothstep(halfW, halfW + max(soft, 0.01), abs(x - c));
+}
+
+/* Procedural studio environment, sampled by WORLD direction — reflections
+   track the SDF normal, the view ray and the camera orbit, never the ring
+   angle or screen UV. Contents: broad cool-gray field brightening upward,
+   one large soft strip light, one narrower brighter strip, and a very
+   subtle cyan region for the restrained edge fringe. bandGain lets the
+   highlight-intensity dial scale the strips without graying the field. */
+vec3 envStudio(vec3 dir, float rough, float bandGain){
+  vec3 d = normalize(dir);
+  d.xz = rot2(d.xz, uStudioRot);
+  vec3 col = mix(vec3(0.30, 0.325, 0.365), vec3(0.86, 0.89, 0.94),
+                 smoothstep(-0.5, 0.85, d.y));
+  float xwin = smoothstep(-0.15, 0.45, 0.85 - abs(d.x));
+  float b1 = band(d.y, 0.42, uStripW,      uStripSoft + rough);
+  float b2 = band(d.y, 0.66, uStripW*0.35, uStripSoft*0.5 + rough*0.8);
+  col += b1 * xwin * vec3(0.75, 0.77, 0.80) * bandGain;
+  col += b2 * xwin * vec3(1.55, 1.60, 1.68) * bandGain;
+  float cy = 1.0 - smoothstep(0.25, 0.85, length(vec2(d.x + 0.62, d.y + 0.42)));
+  col += cy * vec3(-0.02, 0.055, 0.10);
+  return max(col, vec3(0.0));
+}
+
+/* normal + mean-curvature estimate from the SAME four tetrahedral taps.
+   The tap sum is a discrete Laplacian of the SDF, which for a distance
+   field approximates mean curvature; we divide out the conservative
+   uSafe*uFlat scale so kappa is in true 1/world-units. Approximation, not
+   exact differential geometry — good enough to widen/narrow a highlight. */
+vec4 nrmCurv(vec3 p, float eps){
+  vec2 e = vec2(eps, -eps);
+  float d1 = map(p + e.xyy), d2 = map(p + e.yyx),
+        d3 = map(p + e.yxy), d4 = map(p + e.xxx);
+  vec3 n = normalize(e.xyy*d1 + e.yyx*d2 + e.yxy*d3 + e.xxx*d4);
+  float kappa = (d1 + d2 + d3 + d4) * 0.25 / (eps*eps * uSafe * uFlat);
+  return vec4(n, kappa);
+}
+
+vec3 refrSafe(vec3 I, vec3 N, float eta){
+  vec3 r = refract(I, N, eta);
+  return dot(r, r) < 0.5 ? reflect(I, N) : r;   // total internal reflection
+}
+
+/* smooth crossover at the total-internal-reflection boundary: instead of a
+   hard transmit/reflect switch at the critical angle (which draws a sharp
+   line across the tube, tripled by dispersion), blend refraction into
+   internal reflection over a small angular window. xyz = direction,
+   w = transmission weight (0 at/inside TIR). */
+vec4 refrSmooth(vec3 I, vec3 N, float eta){
+  float ci = clamp(-dot(I, N), 0.0, 1.0);
+  float k = 1.0 - eta*eta*(1.0 - ci*ci);
+  vec3 rf = reflect(I, N);
+  if (k <= 0.0) return vec4(rf, 0.0);
+  vec3 rr = normalize(eta*I + (eta*ci - sqrt(k))*N);
+  float w = smoothstep(0.0, 0.30, k);
+  return vec4(normalize(mix(rf, rr, w)), w);
+}
+
+/* per-channel optical depth of the liquid at a point + how "core" it is */
+vec3 inkOD(vec3 p, out float coreW){
+  vec2 ps   = rot2(p.xy, -uSpinPhase);
+  float ths = atan(ps.y, ps.x);               // shape angle (taper, waves)
+  float th  = atan(p.y, p.x);                 // world angle (blob positions)
+  /* apply the SAME deformation as map(), so the wall margin, liquid core
+     and gravity coordinates track the deformed shell exactly */
+  vec3 P3 = uFluid > 0.0005 ? fluidP3(th) : vec3(0.0);
+  float pd = pathD(ps) - uFluid*uCenterAmt*P3.x;
+  float zz = p.z + zWave(ths) + uFluid*uDepthAmt*uRing*P3.z;
+  vec2 q = vec2(pd, zz/uFlat);
+  float r  = tubeR(ths) * thickF(P3.y);
+  float qn = length(q) / r;                   // 0 at core .. 1 at surface
+  float core = 1.0 - uWall;                   // liquid lives inside the wall
+  coreW = smoothstep(core, core - 0.35, qn);
+
+  vec3 od = vec3(0.0);
+  float dens = 0.0;
+  for (int i=0; i<MAXB; i++){
+    if (i >= uBlobN) break;
+    vec4 B = uBlobA[i];
+    float d = mod(th - B.x + PI, TAU) - PI;   // wrapped angular distance
+    /* asymmetric gaussian: tail side (sign of B.z) is stretched;
+       faded out before the antipode so the tail closes without a seam */
+    float w = B.y * (d*B.z > 0.0 ? 1.0 + 2.2*abs(B.z) : 1.0);
+    float g = exp(-0.5*d*d/(w*w));
+    g *= 1.0 - smoothstep(0.7*PI, PI, abs(d));
+    od += uBlobAbs[i] * (B.w * g);
+    dens += B.w * g;
+  }
+
+  float rad   = clamp(q.x / r, -1.0, 1.0);    // -1 inner edge .. +1 outer edge
+  float gravW = smoothstep(0.85, -0.55, rad);
+  float flood = smoothstep(0.35, 1.1, dens);
+
+  if (uOptV1 > 0.5){
+    /* -------- protected clear wall (V1) --------
+       Two explicit, independently controllable masks. coreMask reaches
+       zero at qn = 1-uShellTh, strictly BEFORE the surface; gravity and
+       flood may redistribute density inside the core but are multiplied
+       by coreMask afterwards, so concentrated ink can approach the shell
+       yet can never paint the silhouette. shellMask covers the clear wall
+       band and stays visible at any liquid density. */
+    float coreEdge  = 1.0 - uShellTh;
+    float coreMask  = smoothstep(coreEdge, coreEdge - max(uCoreSoft, 0.03), qn);
+    float shellMask = smoothstep(coreEdge - 0.06, coreEdge + 0.12, qn);
+    float gravity = mix(1.0, mix(gravW, 1.0, flood), uGravity);
+    coreW = coreMask;                          // out: drives wall scattering
+    return od * coreMask * gravity
+         + vec3(0.020, 0.014, 0.008) * (1.0 - uShellCl) * shellMask
+         + vec3(0.010, 0.007, 0.004);          // faint cool body tint
+  }
+
+  /* -------- legacy behaviour (V1 off) -------- */
+  coreW *= mix(1.0, mix(gravW, 1.0, flood), uGravity);
+  return od * coreW + vec3(0.015, 0.011, 0.006);
+}
+
+mat3 orbit(float yaw, float pitch){
+  float cy=cos(yaw), sy=sin(yaw), cp=cos(pitch), sp=sin(pitch);
+  mat3 ry = mat3(cy,0.,-sy, 0.,1.,0., sy,0.,cy);
+  mat3 rx = mat3(1.,0.,0., 0.,cp,sp, 0.,-sp,cp);
+  return ry*rx;
+}
+
+void main(){
+  vec2 uv = (gl_FragCoord.xy - 0.5*uRes) / uRes.y;
+
+  mat3 M = orbit(uYaw, uPitch);
+  float camD = 8.0/uZoom;
+  vec3 ro = M * vec3(0.0, 0.0, camD);
+  vec3 rd = M * normalize(vec3(uv*0.62, -1.0));
+
+  /* march with bisection refinement — tangent rays never shade inside */
+  float t = max(0.0, camD - 2.6);
+  float tPrev = t;
+  float minD = 1e9, tAt = t;
+  float frontSteps = 0.0;
+  bool hit = false;
+  for (int i=0; i<170; i++){
+    frontSteps += 1.0;
+    vec3 p = ro + rd*t;
+    float d = map(p);
+    if (d < minD){ minD = d; tAt = t; }
+    if (d < 0.001){
+      float a = tPrev, b = t;
+      for (int j=0; j<5; j++){
+        float m = 0.5*(a+b);
+        if (map(ro + rd*m) < 0.0005) b = m; else a = m;
+      }
+      t = b; hit = true; break;
+    }
+    tPrev = t;
+    t += d;
+    if (t > camD + 2.6) break;
+  }
+
+  /* background: flat color or a backdrop image; slight vignette + a soft
+     shadow that pools below the object (key light comes from above) */
+  vec2 suv = (gl_FragCoord.xy/uRes - 0.5)*uTexScale + 0.5;
+  vec3 bgBase = uBgMode > 0.5 ? texture(uBgTex, suv).rgb : uBg;
+  float vig = length(uv)*0.5;
+  vec3 bg = bgBase * (1.0 - 0.04*vig*vig) * (1.0 + 0.008*uv.y);
+  float below = smoothstep(0.15, -0.45, uv.y);
+  bg *= 1.0 - (0.018 + 0.05*below*uLight) * exp(-max(minD, 0.0)*2.2);
+
+  float wpp = tAt * 1.24 / uRes.y;
+  float aa  = uSoft * wpp;
+  /* V1: smoothstep silhouette transition on a world-space pixel estimate —
+     crisp, derivative-free, no blurred outer edge. Legacy keeps its ramp. */
+  float alpha;
+  if (uOptV1 > 0.5) alpha = hit ? 1.0 : 1.0 - smoothstep(0.0, max(aa, wpp*1.2), minD);
+  else              alpha = hit ? 1.0 : clamp(1.0 - minD/aa, 0.0, 1.0);
+
+  /* diagnostic capture vars (set inside the V1 branch) */
+  float dFsteps=frontSteps, dFresid=0.0, dEsteps=0.0, dEresid=0.0, dL=0.0;
+  float dTIR=0.0, dF=0.0, dKap=0.0, dShell=0.0, dCore=0.0, dT0=0.0;
+  vec3 dN=vec3(0.), dNEx=vec3(0.), dRefl=vec3(0.), dRefr=vec3(0.);
+  vec3 dEnvRaw=vec3(0.), dEnvFilt=vec3(0.), dOD=vec3(0.), dPre=vec3(0.);
+
+  vec3 col;
+  if (uOptV1 > 0.5){
+    /* =================== OPTICAL SHELL V1 =================== */
+    vec3 colL = toLin(bg);                        // linear working space
+    if (alpha > 0.0){
+      float t0 = hit ? t : tAt;
+      dT0 = t0;
+      dFresid = abs(map(ro + rd*t0));
+      vec3 p = ro + rd*t0;
+
+      float wppH = t0 * 1.24 / uRes.y;
+      float epsN = clamp(0.6*wppH, 0.0012, 0.005) * (1.0 + 0.5*uFluid);
+      vec4 nc = nrmCurv(p, epsN);
+      vec3 n = nc.xyz;
+      dN = n; dKap = nc.w;
+
+      float kRel = clamp(nc.w * max(uTube, 0.05), 0.25, 3.0);
+      float rough = (uIso==9) ? uHiWidth
+                   : clamp(uHiWidth * mix(1.0, 1.0/kRel, uCurvResp), 0.015, 0.4);
+      float noJ = (uIso==11) ? 0.0 : 1.0;
+
+      vec3 rdIn = (uIso==3) ? rd
+                 : normalize(mix(rd, refrSafe(rd, n, 1.0/uIOR), uRefrStr));
+      vec3 pIn = p + rdIn*0.004;
+
+      float Lr; vec3 cDir; vec3 cOrig; float eSteps=0.0;
+      if (uRefrFull > 0.5 && uIso != 3){
+        float ti = 0.012, tiPrev = 0.0;
+        for (int i=0; i<48; i++){
+          float dd = map(pIn + rdIn*ti); eSteps += 1.0;
+          if (dd > 0.0015) break;
+          tiPrev = ti; ti += max(-dd/(uSafe*uFlat), 0.012);
+        }
+        float a2 = tiPrev, b2 = ti;
+        for (int j2i=0; j2i<6; j2i++){
+          float m2 = 0.5*(a2+b2);
+          if (map(pIn + rdIn*m2) < 0.0) a2 = m2; else b2 = m2;
+        }
+        Lr = 0.5*(a2+b2); cDir = rdIn; cOrig = pIn;
+      } else {
+        float tEx2 = t0 + 0.004, tePrev = t0 + 0.004;
+        for (int i=0; i<60; i++){
+          float dd = map(ro + rd*tEx2); eSteps += 1.0;
+          if (dd > 0.0015) break;
+          tePrev = tEx2; tEx2 += max(-dd/(uSafe*uFlat), 0.012);
+        }
+        float a2 = tePrev, b2 = tEx2;
+        for (int j2i=0; j2i<6; j2i++){
+          float m2 = 0.5*(a2+b2);
+          if (map(ro + rd*m2) < 0.0) a2 = m2; else b2 = m2;
+        }
+        Lr = 0.5*(a2+b2) - t0; cDir = rd; cOrig = ro + rd*t0;
+      }
+      dEsteps = eSteps; dL = Lr;
+
+      vec3 od = vec3(0.0);
+      float shellT = 0.0;
+      {
+        const int NS = 22;
+        float st = Lr/float(NS);
+        float j = noJ * hash(gl_FragCoord.xy + vec2(uJitter, uJitter*1.7));
+        for (int i=0; i<NS; i++){
+          vec3 q2 = cOrig + cDir*((float(i)+j)*st);
+          float cw;
+          od += inkOD(q2, cw) * st;
+          shellT += (1.0 - cw) * st;
+        }
+      }
+      if (uIso==2) od = vec3(0.0);
+      dOD = od;
+      vec3 inkT = exp(-od * uInk * 2.4);
+
+      vec3 pEx = cOrig + cDir*Lr;
+      dEresid = abs(map(pEx));
+      vec3 nEx = (uIso==8) ? n : nrmCurv(pEx, epsN*2.0).xyz;
+      dNEx = nEx;
+      vec4 exG;
+      if (uIso==7){
+        vec3 rr = refract(cDir, -nEx, uIOR);
+        exG = (dot(rr,rr) < 0.5) ? vec4(reflect(cDir,-nEx),0.0) : vec4(normalize(rr),1.0);
+      } else {
+        exG = refrSmooth(cDir, -nEx, uIOR);
+      }
+      dTIR = exG.w;
+      vec3 rdOut = (uIso==3) ? rd : normalize(mix(rd, exG.xyz, uRefrStr));
+      dRefr = rdOut;
+
+      float milk = (1.0 - exp(-(Lr*uFrost*0.9 + shellT*uFrost*2.4)))
+                 * mix(0.55, 0.18, uShellCl);
+      vec3 milkL = vec3(0.78, 0.84, 0.93);
+
+      vec3 seenL;
+      if (uBgMode > 0.5){
+        vec2 duv = (rdOut.xy - rd.xy) * 0.35 * uTexScale;
+        float blurR = 0.003 + 0.04*milk;
+        float j2 = noJ * hash(gl_FragCoord.yx + uJitter);
+        vec3 acc = vec3(0.0);
+        for (int i=0; i<8; i++){
+          float an = (float(i) + j2)*0.7854;
+          acc += texture(uBgTex, suv + duv + vec2(cos(an), sin(an))*blurR).rgb;
+        }
+        seenL = toLin(acc*0.125);
+      } else {
+        seenL = toLin(bg);
+      }
+
+      /* env AA width: FIXED conservative default (no derivatives — avoids
+         the undefined-derivative UB across the divergent exit march). The
+         'fwidth (repro)' isolation restores the derivative form to A/B it. */
+      float aaFixed = 0.05;
+      float aaT = (uIso==10) ? (length(fwidth(rdOut))*2.2 + 0.03) : (aaFixed + 0.02);
+      vec3 envRawT = envStudio(rdOut, 0.0, 0.6);
+      vec3 envT;
+      if (uIso==5){ envT = vec3(0.6); }
+      else if (uDisp > 0.0002 && uIso != 6){
+        vec3 dRc = normalize(rdOut + n*uDisp);
+        vec3 dBc = normalize(rdOut - n*uDisp);
+        envT = vec3(envStudio(dRc,   aaT, 0.6).r,
+                    envStudio(rdOut, aaT, 0.6).g,
+                    envStudio(dBc,   aaT, 0.6).b);
+      } else {
+        envT = envStudio(rdOut, aaT, 0.6);
+      }
+      dEnvRaw = envRawT; dEnvFilt = envT;
+      seenL = mix(seenL, envT, 0.22);
+
+      vec3 trans = mix(seenL * inkT, milkL * exp(-od * uInk * 1.7), milk);
+
+      vec3 ldv = normalize(vec3(-0.28, 0.86, 0.42));
+      float form = 0.5 + 0.5*dot(n, ldv);
+      trans *= mix(1.0, 0.70 + 0.42*form, uLight*0.8);
+
+      float ndv = clamp(dot(n, -rd), 0.0, 1.0);
+      float F = (uIso==4) ? 0.0
+               : clamp((uF0 + (1.0 - uF0)*pow(1.0 - ndv, 5.0)) * uFresStr, 0.0, 1.0);
+      dF = F;
+      vec3 Rr = reflect(rd, n);
+      float aaR = (uIso==10) ? (length(fwidth(Rr))*2.2) : aaFixed;
+      vec3 refl = (uIso==5) ? vec3(0.6)*uReflStr
+                 : envStudio(Rr, max(rough, aaR), uHiInt) * uReflStr;
+      dRefl = Rr;
+      vec3 surf = mix(trans, refl, F);
+      if (uIso==1) surf = vec3(0.35, 0.40, 0.50);
+
+      { float cwM; inkOD(cOrig + cDir*(Lr*0.5), cwM); dCore = cwM; dShell = clamp(1.0-cwM, 0.0, 1.0); }
+
+      colL = mix(colL, surf, alpha);
+    }
+    dPre = colL;
+    if (uIso==12){
+      col = toSRGB(clamp(colL, 0.0, 1.0));
+    } else {
+      vec3 xe = max(colL, 0.0) * uExposure;
+      vec3 mapd = mix(clamp(xe, 0.0, 1.0), acesFit(xe), uRolloff);
+      mapd = mapd*(1.0 - uLift) + vec3(uLift);
+      col = toSRGB(mapd);
+    }
+  } else {
+  /* ====================== LEGACY PATH ====================== */
+  col = bg;
+  if (alpha > 0.0){
+    float t0 = hit ? t : tAt;
+    vec3 p = ro + rd*t0;
+    vec3 n = calcNormal(p);
+
+    /* find exit point, then jittered uniform sampling — no banding */
+    float tExit = t0 + 0.004;
+    for (int i=0; i<60; i++){
+      float d = map(ro + rd*tExit);
+      if (d > 0.0015) break;
+      tExit += max(-d/(uSafe*uFlat), 0.012);
+    }
+    float L = tExit - t0;
+    vec3 od = vec3(0.0);
+    float shellT = 0.0;
+    {
+      const int NS = 22;
+      float st = L/float(NS);
+      float j = hash(gl_FragCoord.xy + vec2(uJitter, uJitter*1.7));
+      for (int i=0; i<NS; i++){
+        float depth = (float(i)+j)*st;
+        vec3 q = ro + rd*(t0 + depth);
+        float coreW;
+        /* frost extinction: the deeper the liquid sits, the hazier its
+           contribution — looking down the tube you see a soft gradient,
+           never a crisp dark core (that read as a hollow pipe) */
+        float wgt = exp(-depth * (1.2 + 4.5*uFrost));
+        od += inkOD(q, coreW) * wgt;
+        shellT += 1.0 - coreW;
+      }
+      od *= st;
+      shellT *= st;
+    }
+
+    vec3 inkT = exp(-od * uInk);
+
+    /* frosted polycarbonate: scattering from total path + extra from the
+       wall, so grazing edges go milky-solid and the blob keeps a pale margin.
+       Capped below 1 so the glass always stays see-through. */
+    float milk = (1.0 - exp(-(L*uFrost*1.6 + shellT*uFrost*3.0))) * 0.82;
+    vec3 milkCol = vec3(0.95, 0.966, 0.99);   // translucent frosted blue-white
+
+    /* what shows THROUGH the glass: the backdrop, refracted by the surface
+       normal and blurred by the frost — real frosted-glass transmission */
+    vec3 seen = bg;
+    if (uBgMode > 0.5){
+      vec2 refr  = n.xy * (0.02 + 0.10*L) * uTexScale;
+      float blurR = 0.003 + 0.05*milk;
+      float j2 = hash(gl_FragCoord.yx + uJitter);
+      vec3 acc = vec3(0.0);
+      for (int i=0; i<8; i++){
+        float an = (float(i) + j2)*0.7854;
+        acc += texture(uBgTex, suv - refr + vec2(cos(an), sin(an))*blurR).rgb;
+      }
+      seen = acc*0.125;
+    }
+
+    /* fine frosted-glass grain, fixed to the shape so it rotates with it —
+       kept subtle so the surface reads clean, not clay-speckled */
+    vec3 ps = vec3(rot2(p.xy, -uSpinPhase), p.z);
+    float spk = (hash3(floor(ps*180.0)) - 0.5) * 0.03
+              + (hash3(floor(ps*60.0) + 7.0) - 0.5) * 0.018;
+
+    vec3 body = mix(seen * inkT, milkCol * exp(-od * uInk * 0.72), milk);
+    body *= 1.0 + spk * uSpeckle * milk;
+
+    /* ---- glossy clear-coat lighting (this is what reads as glass) ---- */
+    vec3  ld  = normalize(vec3(-0.28, 0.86, 0.42));   // big soft key, above-left
+    vec3  h   = normalize(ld - rd);                   // half-vector
+    float ndl = dot(n, ld);
+    float ndh = max(dot(n, h), 0.0);
+    float ndv = clamp(dot(n, -rd), 0.0, 1.0);
+    float fres = pow(1.0 - ndv, 3.0);
+
+    /* strong tonal gradient: bright top ridge -> shadowed underside, so the
+       round tube reads three-dimensional instead of flat */
+    float form = 0.5 + 0.5*ndl;
+    float grad = mix(1.0, 0.64 + 0.52*form, uLight);
+    grad *= 1.0 - 0.30*uLight*smoothstep(0.05, -0.85, ndl);   // deepen core shadow
+    body *= grad;
+
+    /* light-catching edge: the frosted surface turning away from the camera
+       glows softly — but only on the lit side, and spread (low exponent) so
+       it's a luminous gradient, not a hard white band */
+    float rim = pow(1.0 - ndv, 2.0) * form;
+    body += rim * vec3(0.80, 0.86, 0.98) * 0.11
+          * (0.4 + 0.6*milk) * uLight * mix(vec3(1.0), inkT, 0.4);
+
+    /* faint bounce up from the backdrop */
+    body += vec3(0.016, 0.018, 0.020)
+          * clamp(dot(n, normalize(vec3(0.0, -0.75, 0.65))), 0.0, 1.0)
+          * milk * uLight;
+
+    /* specular: a wide soft area-light sheen (the glassy body glow) plus a
+       crisp hot streak on the top ridge. Rides on the frosted coat, so it
+       survives (dimmed) over ink. */
+    float sBroad = pow(ndh, 8.0);
+    float sTight = pow(ndh, 120.0);
+    float coat   = 0.4 + 0.6*milk;
+    body += (sBroad*0.26 + sTight*0.34) * uGlare * coat
+          * mix(vec3(1.0), 0.35 + 0.65*inkT, 0.6);
+
+    col = mix(bg, body, alpha);
+  }
+  }
+
+  if (uDebug > 0){
+    bool bad = inv1(dFresid)||inv1(dEsteps)||inv1(dEresid)||inv1(dL)||inv1(dTIR)
+             ||inv1(dF)||inv1(dKap)||inv1(dShell)||inv1(dCore)
+             ||inv3(dN)||inv3(dNEx)||inv3(dRefl)||inv3(dRefr)
+             ||inv3(dEnvRaw)||inv3(dEnvFilt)||inv3(dOD)||inv3(dPre);
+    if (bad){ O = vec4(1.0, 0.0, 1.0, 1.0); return; }
+    if (uDebug == 22){ O = vec4(0.0, 0.0, 0.0, 1.0); return; }
+    vec3 dc = vec3(0.0);
+    float camD2 = 8.0/uZoom;
+    if      (uDebug==1)  dc = alpha>0.0 ? vec3(0.55) : vec3(0.05);
+    else if (uDebug==2)  dc = vec3(clamp((dT0-(camD2-2.6))/5.2, 0.0, 1.0));
+    else if (uDebug==3)  dc = vec3(clamp(dFresid*1000.0, 0.0, 1.0));
+    else if (uDebug==4)  dc = vec3(clamp(dFsteps/170.0, 0.0, 1.0));
+    else if (uDebug==5)  dc = vec3(clamp((dT0+dL-(camD2-2.6))/5.2, 0.0, 1.0));
+    else if (uDebug==6)  dc = vec3(clamp(dEresid*500.0, 0.0, 1.0));
+    else if (uDebug==7)  dc = vec3(clamp(dEsteps/60.0, 0.0, 1.0));
+    else if (uDebug==8)  dc = vec3(clamp(dL*1.5, 0.0, 1.0));
+    else if (uDebug==9)  dc = 0.5 + 0.5*dN;
+    else if (uDebug==10) dc = 0.5 + 0.5*dNEx;
+    else if (uDebug==11) dc = 0.5 + 0.5*dRefl;
+    else if (uDebug==12) dc = 0.5 + 0.5*dRefr;
+    else if (uDebug==13) dc = vec3(dTIR);
+    else if (uDebug==14) dc = vec3(dF);
+    else if (uDebug==15) dc = 0.5 + 0.5*vec3(clamp(dKap*0.5, -1.0, 1.0));
+    else if (uDebug==16) dc = clamp(dEnvRaw, 0.0, 1.0);
+    else if (uDebug==17) dc = clamp(dEnvFilt, 0.0, 1.0);
+    else if (uDebug==18) dc = vec3(dShell);
+    else if (uDebug==19) dc = vec3(dCore);
+    else if (uDebug==20) dc = clamp(dOD*0.3, 0.0, 1.0);
+    else if (uDebug==21) dc = toSRGB(clamp(dPre, 0.0, 1.0));
+    O = vec4(dc, 1.0); return;
+  }
+
+  float g = hash(gl_FragCoord.xy) - 0.5;
+  col += g * uGrain * (0.35 + 0.65*alpha);
+
+  O = vec4(col, 1.0);
+}`;
+
+function compile(type, src){
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+    throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
+  throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+const U = {};
+["uRes","uYaw","uPitch","uSpinPhase","uOrgPhase","uZoom","uTube","uFlat","uTaper",
+ "uCornerW","uStretch","uStretchA","uOrganic","uInk","uGravity","uLight","uGlare","uFrost","uWall","uSpeckle",
+ "uGrain","uBg","uSoft","uRing","uJitter","uBgTex","uBgMode","uTexScale",
+ "uFluid","uCenterAmt","uThickAmt","uDepthAmt","uGeoLag","uPMean","uPVar",
+ "uSafe","uPressN","uPressB","uBlobN","uBlobA","uBlobAbs",
+ "uOptV1","uExposure","uRolloff","uLift","uShellTh","uShellCl","uCoreSoft",
+ "uFresStr","uF0","uReflStr","uStudioRot","uStripW","uStripSoft",
+ "uCurvResp","uHiWidth","uHiInt","uIOR","uRefrStr","uDisp","uRefrFull","uDebug","uIso"]
+ .forEach(n => U[n] = gl.getUniformLocation(prog, n));
+
+/* ============================================================
+   State: global dials + blob list
+============================================================ */
+const S = {};
+let blobs = [];
+let blobSeq = 0;
+
+function mkBlob(over){
+  return Object.assign({
+    id: ++blobSeq,
+    color: "#16233f",
+    size: 0.5,        // angular half-width, radians
+    speed: 0.3,       // rad/s, sign = direction
+    amt: 0.9,         // ink strength
+    tail: 0.5,        // trailing smear 0..1
+    drift: 0.5,       // lava-lamp speed oscillation 0..1.2 (can reverse)
+    follow: false,
+    angle: Math.random()*Math.PI*2,
+    dPh: Math.random()*Math.PI*2,
+    dFq: 0.35 + Math.random()*0.5,  // rad/s of the drift oscillation
+  }, over || {});
+}
+
+const PRESETS = {
+  reference: {
+    dials: { ink:0.95, gravity:0.82, light:0.9, glare:0.85, speed:1,
+             fluid:0.45, fcenter:0.1, fthick:0.4, fdepth:0.12, flag:0.35, fsmooth:0.5,
+             spin:0.16, tilt:0.45, tiltspd:1.0, wob:0.22, wobspd:0.5,
+             morph:0.85, morphspd:0.45,
+             ring:1.0, lobe:0.17, stretch:0.14, tube:0.2, flat:0.7, taper:0.2, zoom:1.18,
+             frost:0.18, wall:0.2, speckle:0, soft:0.9, grain:0, bg:0.955,
+             optv1:1, refrfull:1, exposure:1.15, rolloff:0.85, lift:0.015,
+             shellth:0.16, shellcl:0.7, coresoft:0.18,
+             fresstr:1.0, fresf0:0.04, reflstr:1.0, studiorot:0.5,
+             stripw:0.22, strips:0.16, curvresp:0.6, hiwidth:0.09, hiint:1.0,
+             ior:1.45, refrstr:0.7, disp:0.012 },
+    blobs: [
+      { color:"#101c33", size:0.55, speed:0.32,  amt:1.0,  tail:0.6, drift:0.45 },
+      { color:"#33507a", size:0.85, speed:-0.15, amt:0.4,  tail:0.5, drift:0.7 },
+    ],
+  },
+  lava: {
+    dials: { ink:0.8, gravity:0.55, light:0.6, glare:0.55, speed:1,
+             fluid:0.55, fcenter:0.12, fthick:0.5, fdepth:0.1, flag:0.3, fsmooth:0.45,
+             spin:0.12, tilt:0.4, tiltspd:0.8, wob:0.35, wobspd:0.8,
+             morph:0.7, morphspd:0.7,
+             ring:1.0, lobe:0.15, stretch:0.1, tube:0.34, flat:0.78, taper:0.1, zoom:1.0,
+             frost:0.9, wall:0.26, speckle:0.6, soft:1.6, grain:0.03, bg:0.945,
+             optv1:0, refrfull:1 },
+    blobs: [
+      { color:"#1c2f56", size:0.5,  speed:0.25,  amt:0.9, tail:0.55, drift:0.6 },
+      { color:"#7a3352", size:0.42, speed:-0.2,  amt:0.7, tail:0.5,  drift:0.8 },
+      { color:"#2e6660", size:0.6,  speed:0.14,  amt:0.5, tail:0.65, drift:1.0 },
+    ],
+  },
+  ghost: {
+    dials: { ink:0.4, gravity:0.45, light:0.5, glare:0.4, speed:0.8,
+             fluid:0.25, fcenter:0.06, fthick:0.3, fdepth:0.08, flag:0.4, fsmooth:0.7,
+             spin:0.1, tilt:0.35, tiltspd:0.7, wob:0.15, wobspd:0.5,
+             morph:0.5, morphspd:0.4,
+             ring:1.0, lobe:0.16, stretch:0.08, tube:0.28, flat:0.75, taper:0.1, zoom:1.0,
+             frost:1.0, wall:0.3, speckle:0.4, soft:2.2, grain:0.025, bg:0.95,
+             optv1:0, refrfull:1 },
+    blobs: [
+      { color:"#3d5a80", size:0.9, speed:0.22, amt:0.55, tail:0.5, drift:0.5 },
+    ],
+  },
+};
+
+const DIALS = ["ink","gravity","fluid","fcenter","fthick","fdepth","flag","fsmooth",
+               "light","glare","speed","spin","tilt","tiltspd","wob",
+               "wobspd","morph","morphspd","ring","lobe","stretch","tube","flat","taper",
+               "zoom","frost","wall","speckle","soft","grain","bg",
+               "optv1","refrfull","exposure","rolloff","lift","shellth","shellcl",
+               "coresoft","fresstr","fresf0","reflstr","studiorot","stripw","strips",
+               "curvresp","hiwidth","hiint","ior","refrstr","disp"];
+const CHECKS = new Set(["optv1","refrfull"]);
+
+function hex2rgb(h){ return [1,3,5].map(i => parseInt(h.slice(i, i+2), 16)/255); }
+function absorb(hex){
+  return hex2rgb(hex).map(c => -Math.log(Math.min(1, Math.max(0.02, c))));
+}
+function fmt(v){ return (+v).toFixed(2); }
+
+/* ---------- blob UI ---------- */
+const blobList = document.getElementById("blobList");
+const BROWS = [
+  ["size",  "Size",  0.15, 1.4,  0.01],
+  ["speed", "Speed", -1,   1,    0.01],
+  ["amt",   "Ink",   0,    1.5,  0.01],
+  ["tail",  "Tail",  0,    1,    0.01],
+  ["drift", "Drift", 0,    1.2,  0.01],
+];
+
+function renderBlobs(){
+  blobList.innerHTML = "";
+  blobs.forEach((b, idx) => {
+    const box = document.createElement("div");
+    box.className = "blob";
+
+    const top = document.createElement("div");
+    top.className = "blob-top";
+    const colI = document.createElement("input");
+    colI.type = "color"; colI.value = b.color;
+    colI.addEventListener("input", () => { b.color = colI.value; });
+    const name = document.createElement("span");
+    name.className = "bname"; name.textContent = "BLOB " + (idx+1);
+    const fLab = document.createElement("label");
+    const fCb = document.createElement("input");
+    fCb.type = "checkbox"; fCb.checked = b.follow;
+    fCb.addEventListener("change", () => { b.follow = fCb.checked; });
+    fLab.append(fCb, document.createTextNode("cursor"));
+    const del = document.createElement("button");
+    del.className = "bx"; del.textContent = "×"; del.title = "Remove blob";
+    del.addEventListener("click", () => {
+      blobs = blobs.filter(x => x !== b); renderBlobs();
+    });
+    top.append(colI, name, fLab, del);
+    box.append(top);
+
+    for (const [key, label, min, max, step] of BROWS){
+      const row = document.createElement("div");
+      row.className = "brow";
+      const sp = document.createElement("span"); sp.textContent = label;
+      const r = document.createElement("input");
+      r.type = "range"; r.min = min; r.max = max; r.step = step; r.value = b[key];
+      const out = document.createElement("output"); out.textContent = fmt(b[key]);
+      r.addEventListener("input", () => { b[key] = +r.value; out.textContent = fmt(b[key]); });
+      row.append(sp, r, out);
+      box.append(row);
+    }
+    blobList.append(box);
+  });
+  document.getElementById("blobAdd").style.display = blobs.length >= MAXB ? "none" : "";
+}
+
+const ADD_COLORS = ["#16233f","#7a3352","#2e6660","#5c4a7a","#7a5c33","#33607a"];
+document.getElementById("blobAdd").addEventListener("click", () => {
+  if (blobs.length >= MAXB) return;
+  blobs.push(mkBlob({
+    color: ADD_COLORS[blobs.length % ADD_COLORS.length],
+    speed: (Math.random() < 0.5 ? -1 : 1) * (0.12 + Math.random()*0.3),
+    size: 0.35 + Math.random()*0.5,
+    amt: 0.5 + Math.random()*0.5,
+  }));
+  renderBlobs();
+});
+
+/* ---------- dial UI + saved presets ---------- */
+const LS_KEY = "organicO.userPresets";
+let userPresets = {};
+try { userPresets = JSON.parse(localStorage.getItem(LS_KEY)) || {}; } catch(e){}
+function persistPresets(){
+  try { localStorage.setItem(LS_KEY, JSON.stringify(userPresets)); } catch(e){}
+}
+function snapshot(){
+  return {
+    dials: Object.assign({}, S),
+    blobs: blobs.map(b => ({ color:b.color, size:b.size, speed:b.speed,
+                             amt:b.amt, tail:b.tail, drift:b.drift, follow:b.follow })),
+  };
+}
+
+function applyPreset(p){
+  Object.assign(S, p.dials);
+  for (const id of DIALS)
+    if (S[id] == null) S[id] = PRESETS.reference.dials[id];
+  for (const id of DIALS){
+    const el = document.getElementById(id);
+    if (CHECKS.has(id)) el.checked = S[id] > 0.5;
+    else el.value = S[id];
+    const lbl = document.getElementById("v-"+id);
+    if (lbl) lbl.textContent = fmt(S[id]);
+  }
+  blobs = p.blobs.map(b => mkBlob(Object.assign({}, b)));
+  renderBlobs();
+}
+
+const presetRow = document.getElementById("presets");
+const saveRow = document.getElementById("saveRow");
+function renderPresets(){
+  presetRow.innerHTML = "";
+  for (const name in PRESETS){
+    const b = document.createElement("button");
+    b.textContent = name[0].toUpperCase() + name.slice(1);
+    b.addEventListener("click", () => applyPreset(PRESETS[name]));
+    presetRow.append(b);
+  }
+  for (const name in userPresets){
+    const b = document.createElement("button");
+    b.textContent = name + " ";
+    const x = document.createElement("span");
+    x.textContent = "×";
+    x.style.opacity = ".55";
+    x.title = "Delete preset";
+    x.addEventListener("click", ev => {
+      ev.stopPropagation();
+      delete userPresets[name];
+      persistPresets();
+      renderPresets();
+    });
+    b.append(x);
+    b.addEventListener("click", () => applyPreset(userPresets[name]));
+    presetRow.append(b);
+  }
+  const save = document.createElement("button");
+  save.textContent = "+ Save";
+  save.title = "Save current settings as a preset";
+  save.addEventListener("click", () => {
+    saveRow.style.display = saveRow.style.display === "none" ? "" : "none";
+    if (saveRow.style.display !== "none") document.getElementById("saveName").focus();
+  });
+  presetRow.append(save);
+}
+function doSave(){
+  const name = document.getElementById("saveName").value.trim();
+  if (!name) return;
+  userPresets[name] = snapshot();
+  persistPresets();
+  document.getElementById("saveName").value = "";
+  saveRow.style.display = "none";
+  renderPresets();
+}
+document.getElementById("saveOk").addEventListener("click", doSave);
+document.getElementById("saveName").addEventListener("keydown", e => {
+  if (e.key === "Enter") doSave();
+});
+renderPresets();
+
+for (const id of DIALS){
+  const el = document.getElementById(id);
+  if (CHECKS.has(id)){
+    el.addEventListener("change", e => { S[id] = e.target.checked ? 1 : 0; });
+  } else {
+    el.addEventListener("input", e => {
+      S[id] = +e.target.value;
+      const lbl = document.getElementById("v-"+id);
+      if (lbl) lbl.textContent = fmt(S[id]);
+    });
+  }
+}
+
+let paused = false;
+document.getElementById("pause").addEventListener("click", e => {
+  paused = !paused;
+  e.target.textContent = paused ? "Play" : "Pause";
+});
+document.getElementById("reset").addEventListener("click", () => {
+  drag.yaw = 0; drag.pitch = 0;
+});
+const panel = document.getElementById("panel");
+document.getElementById("panelHead").addEventListener("click", () => {
+  panel.classList.toggle("closed");
+  document.getElementById("panelToggle").textContent =
+    panel.classList.contains("closed") ? "+" : "—";
+});
+
+S.debug = 0; S.iso = 0;
+document.getElementById("debug").addEventListener("change", e => { S.debug = +e.target.value; });
+document.getElementById("iso").addEventListener("change", e => { S.iso = +e.target.value; });
+
+applyPreset(PRESETS.reference);
+
+/* ============================================================
+   Backdrop texture — the frosted glass sees through it
+============================================================ */
+const bgTex = gl.createTexture();
+gl.activeTexture(gl.TEXTURE0);
+gl.bindTexture(gl.TEXTURE_2D, bgTex);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+              new Uint8Array([240, 240, 242, 255]));
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+gl.uniform1i(U.uBgTex, 0);
+
+/* GPU / DPR / resolution readout (deliverable: self-documenting screenshots) */
+try {
+  const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+  const rend = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : "renderer hidden";
+  const upd = () => {
+    document.getElementById("gpuInfo").textContent =
+      (rend.length > 42 ? rend.slice(0,42)+"…" : rend) +
+      " · DPR " + (Math.min(devicePixelRatio||1,2)) +
+      " · " + canvas.width + "×" + canvas.height;
+  };
+  upd(); addEventListener("resize", () => setTimeout(upd, 100));
+} catch(e){}
+
+let bgMode = 0, texW = 1, texH = 1;
+function setTexImage(src, w, h){
+  gl.bindTexture(gl.TEXTURE_2D, bgTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+  texW = w; texH = h; bgMode = 1;
+}
+function makeGradient(){
+  const c = document.createElement("canvas");
+  c.width = c.height = 512;
+  const x = c.getContext("2d");
+  const g = x.createLinearGradient(0, 512, 512, 0);
+  g.addColorStop(0.0, "#1d2f52");
+  g.addColorStop(0.35, "#3f6fa8");
+  g.addColorStop(0.62, "#7fc3c9");
+  g.addColorStop(0.85, "#f3d9a4");
+  g.addColorStop(1.0, "#e88a5d");
+  x.fillStyle = g; x.fillRect(0, 0, 512, 512);
+  const r = x.createRadialGradient(140, 150, 10, 140, 150, 300);
+  r.addColorStop(0, "rgba(255,255,255,.5)"); r.addColorStop(1, "rgba(255,255,255,0)");
+  x.fillStyle = r; x.fillRect(0, 0, 512, 512);
+  setTexImage(c, 512, 512);
+}
+document.getElementById("bgmode").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.dataset.m === "flat") bgMode = 0;
+  else if (b.dataset.m === "grad") makeGradient();
+  else document.getElementById("bgfile").click();
+});
+document.getElementById("bgfile").addEventListener("change", e => {
+  const file = e.target.files[0]; if (!file) return;
+  const img = new Image();
+  img.onload = () => { setTexImage(img, img.naturalWidth, img.naturalHeight); URL.revokeObjectURL(img.src); };
+  img.src = URL.createObjectURL(file);
+});
+
+/* ============================================================
+   Pointer: drag = orbit; cursor angle can drive blobs marked "cursor"
+============================================================ */
+const drag = { on:false, x:0, y:0, yaw:0, pitch:0 };
+const cursor = { angle:0, has:false };
+
+canvas.addEventListener("pointerdown", e => {
+  drag.on = true; drag.x = e.clientX; drag.y = e.clientY;
+  canvas.classList.add("dragging");
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener("pointermove", e => {
+  const cx = e.clientX - innerWidth/2, cy = innerHeight/2 - e.clientY;
+  cursor.angle = Math.atan2(cy, cx);
+  cursor.has = true;
+  if (!drag.on) return;
+  drag.yaw   += (e.clientX - drag.x) * 0.005;
+  drag.pitch += (e.clientY - drag.y) * 0.005;
+  drag.pitch = Math.max(-1.2, Math.min(1.2, drag.pitch));
+  drag.x = e.clientX; drag.y = e.clientY;
+});
+addEventListener("pointerup", () => { drag.on = false; canvas.classList.remove("dragging"); });
+
+/* ============================================================
+   Render loop.
+   Motion rules (from the reference):
+   - the tri-lobe profile is constant; the shape only rotates rigidly
+   - the ring plane tilts on two sinusoids with non-matching periods,
+     so the sway precesses and never repeats the same path
+   - blobs circulate on their own clocks, independent of the shape
+============================================================ */
+const ph = { t: 0, spin: 0, org: 0, morph: 0, stretchA: 0.8 };
+let last = performance.now();
+let frameN = 0;
+
+function shortestArc(a, b){
+  let d = (b - a) % (Math.PI*2);
+  if (d >  Math.PI) d -= Math.PI*2;
+  if (d < -Math.PI) d += Math.PI*2;
+  return d;
+}
+
+function resize(){
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  const w = Math.round(innerWidth*dpr), h = Math.round(innerHeight*dpr);
+  if (canvas.width !== w || canvas.height !== h){
+    canvas.width = w; canvas.height = h;
+    gl.viewport(0, 0, w, h);
+  }
+}
+
+const blobA   = new Float32Array(MAXB*4);
+const blobAbs = new Float32Array(MAXB*3);
+const pressB  = new Float32Array(MAXB*4);
+
+function frame(now){
+  const dt = Math.min((now - last)/1000, 0.05);
+  last = now; frameN++;
+
+  const dts = dt * S.speed;          // master clock — one dial scales it all
+  if (!paused){
+    ph.t    += dts;
+    /* when the fluid drives the motion, constant-rate rotations step back:
+       spin damped, stretch-axis rotation nearly frozen */
+    ph.spin += dts * S.spin * 0.35 * (1 - 0.65*S.fluid);
+    ph.stretchA += dts * 0.07 * (1 - 0.85*S.fluid);
+    ph.org  += dts * S.wobspd * 1.1;
+    ph.morph += dts * S.morphspd * 0.45;
+    for (const b of blobs){
+      if (b.follow && cursor.has){
+        b.angle += shortestArc(b.angle, cursor.angle) * Math.min(1, dt*4);
+      } else {
+        /* lava-lamp drift: speed breathes, can briefly reverse at high drift */
+        const mod = 1 + b.drift * Math.sin(ph.t*b.dFq + b.dPh);
+        b.angle += dts * b.speed * mod;
+      }
+    }
+  }
+
+  resize();
+
+  /* precessing tilt: two incommensurate frequencies */
+  const tiltYaw   = S.tilt * 0.55 * Math.sin(ph.t * 0.31 * S.tiltspd);
+  const tiltPitch = S.tilt * 0.42 * Math.sin(ph.t * 0.203 * S.tiltspd + 1.3);
+
+  const n = Math.min(blobs.length, MAXB);
+  for (let i=0; i<n; i++){
+    const b = blobs[i];
+    blobA[i*4]   = b.angle;
+    blobA[i*4+1] = b.size;
+    /* tail trails opposite the direction of travel */
+    blobA[i*4+2] = b.tail * (b.speed >= 0 ? -1 : 1) * (b.follow ? 0.3 : 1);
+    blobA[i*4+3] = b.amt;
+    const A = absorb(b.color);
+    blobAbs[i*3] = A[0]; blobAbs[i*3+1] = A[1]; blobAbs[i*3+2] = A[2];
+  }
+
+  gl.uniform2f(U.uRes, canvas.width, canvas.height);
+  gl.uniform1f(U.uYaw,   drag.yaw + tiltYaw);
+  gl.uniform1f(U.uPitch, drag.pitch + tiltPitch);
+  gl.uniform1f(U.uSpinPhase, ph.spin);
+  gl.uniform1f(U.uOrgPhase, ph.org);
+  gl.uniform1f(U.uZoom, S.zoom);   // strictly manual — never animated
+  gl.uniform1f(U.uRing, S.ring);
+  gl.uniform1f(U.uTube, S.tube);
+  gl.uniform1f(U.uFlat, S.flat);
+  /* Tri-lobe / Taper dials are maximums: Shape morph swings the live values
+     between (1 - morph) x max and max. Each of the three corners runs on its
+     own slightly-detuned clock, so they swell and relax independently — the
+     shape flows like liquid instead of crossfading */
+  const wMax = Math.min(S.lobe * 3.0, 0.7);
+  const CR = [1.0, 0.83, 1.19], CO = [0, 2.4, 4.4];
+  const cw = CR.map((r, i) =>
+    wMax * (1 - S.morph * (0.5 + 0.5*Math.sin(ph.morph*r + CO[i]))));
+  gl.uniform3f(U.uCornerW, cw[0], cw[1], cw[2]);
+  const mTaper = 1 - S.morph * (0.5 + 0.5*Math.sin(ph.morph*0.77 + 1.9));
+  gl.uniform1f(U.uTaper, S.taper * mTaper);
+  /* the stretch axis drifts slowly and its amount breathes with the morph,
+     so the elongation flows around the form like pulled liquid */
+  gl.uniform1f(U.uStretch, S.stretch * (0.7 + 0.3*Math.sin(ph.morph*0.53 + 0.7)));
+  gl.uniform1f(U.uStretchA, ph.stretchA);
+  gl.uniform1f(U.uOrganic, S.wob);
+  gl.uniform1f(U.uInk, S.ink * 12.0);
+  gl.uniform1f(U.uGravity, S.gravity);
+  gl.uniform1f(U.uLight, S.light);
+  gl.uniform1f(U.uGlare, S.glare);
+  gl.uniform1f(U.uFrost, S.frost * 2.0);
+  gl.uniform1f(U.uWall, S.wall);
+  gl.uniform1f(U.uSpeckle, S.speckle);
+  gl.uniform1f(U.uGrain, S.grain);
+  gl.uniform3fv(U.uBg, [S.bg*1.002, S.bg, S.bg*0.998]);
+  gl.uniform1f(U.uSoft, S.soft);
+  gl.uniform1f(U.uJitter, (frameN % 64) * 0.618);
+  gl.uniform1f(U.uBgMode, bgMode);
+  {
+    const ca = canvas.width / canvas.height, ta = texW / texH;
+    const sc = ta > ca ? [ca/ta, 1] : [1, ta/ca];
+    gl.uniform2f(U.uTexScale, sc[0], sc[1]);
+  }
+  /* ---- fluid pressure field: pack lobes, centre numerically ----
+     Same formula as the shader (raised-cosine^k). The mean is computed
+     here over 96 angular samples and subtracted in the shader, making the
+     field zero-mean: pressure redistributes material, never adds it. The
+     lag offsets merely rotate the field, so one mean serves all channels. */
+  for (let i=0; i<n; i++){
+    const b = blobs[i];
+    const sigma = Math.min(1.7, Math.max(0.3, b.size) * (1 + 1.6*S.fsmooth));
+    pressB[i*4]   = b.angle;
+    pressB[i*4+1] = Math.min(7, Math.max(0.7, 2/(sigma*sigma)));  // lobe exponent
+    pressB[i*4+2] = b.amt;
+    pressB[i*4+3] = b.follow ? 0 : (Math.sign(b.speed) || 1);     // travel dir
+  }
+  let pMean = 0, pM2 = 0;
+  {
+    const NSAMP = 96;
+    for (let sIdx=0; sIdx<NSAMP; sIdx++){
+      const th = sIdx/NSAMP * Math.PI*2;
+      let P = 0;
+      for (let i=0; i<n; i++){
+        P += pressB[i*4+2] *
+             Math.pow(0.5 + 0.5*Math.cos(th - pressB[i*4]), pressB[i*4+1]);
+      }
+      pMean += P; pM2 += P*P;
+    }
+    pMean /= NSAMP;
+    pM2 = Math.max(0, pM2/NSAMP - pMean*pMean);   // variance
+  }
+  /* conservative march factor: shrink with the deformation Lipschitz bound */
+  const safe = 0.55 / (1 + S.fluid*(1.6*S.fcenter + 0.35*S.fthick + 1.6*S.fdepth));
+
+  gl.uniform1f(U.uFluid, S.fluid);
+  gl.uniform1f(U.uCenterAmt, S.fcenter);
+  gl.uniform1f(U.uThickAmt, S.fthick);
+  gl.uniform1f(U.uDepthAmt, S.fdepth);
+  gl.uniform1f(U.uGeoLag, S.flag);
+  gl.uniform1f(U.uPMean, pMean);
+  gl.uniform1f(U.uPVar, pM2);
+  gl.uniform1f(U.uSafe, safe);
+  gl.uniform1i(U.uPressN, n);
+  gl.uniform4fv(U.uPressB, pressB);
+  gl.uniform1i(U.uBlobN, n);
+  gl.uniform4fv(U.uBlobA, blobA);
+  gl.uniform3fv(U.uBlobAbs, blobAbs);
+
+  gl.uniform1f(U.uOptV1, S.optv1);
+  gl.uniform1f(U.uExposure, S.exposure);
+  gl.uniform1f(U.uRolloff, S.rolloff);
+  gl.uniform1f(U.uLift, S.lift);
+  gl.uniform1f(U.uShellTh, S.shellth);
+  gl.uniform1f(U.uShellCl, S.shellcl);
+  gl.uniform1f(U.uCoreSoft, S.coresoft);
+  gl.uniform1f(U.uFresStr, S.fresstr);
+  gl.uniform1f(U.uF0, S.fresf0);
+  gl.uniform1f(U.uReflStr, S.reflstr);
+  gl.uniform1f(U.uStudioRot, S.studiorot);
+  gl.uniform1f(U.uStripW, S.stripw);
+  gl.uniform1f(U.uStripSoft, S.strips);
+  gl.uniform1f(U.uCurvResp, S.curvresp);
+  gl.uniform1f(U.uHiWidth, S.hiwidth);
+  gl.uniform1f(U.uHiInt, S.hiint);
+  gl.uniform1f(U.uIOR, S.ior);
+  gl.uniform1f(U.uRefrStr, S.refrstr);
+  gl.uniform1f(U.uDisp, S.disp);
+  gl.uniform1f(U.uRefrFull, S.refrfull);
+  gl.uniform1i(U.uDebug, S.debug | 0);
+  gl.uniform1i(U.uIso, S.iso | 0);
+
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+
+<script>
+/* =========================================================================
+   SCROLL DRIVER — maps scroll progress onto the shader's live uniforms.
+   This is the entire "scroll animation" mechanism: progress -> lerp
+   keyframes -> write into S / blobs / camera. The render loop does the rest.
+   ========================================================================= */
+(function(){
+  "use strict";
+  const lerp = (a,b,t)=>a+(b-a)*t;
+  const hx = h => [1,3,5].map(i=>parseInt(h.slice(i,i+2),16));
+  const mixHex = (a,b,t)=>{ const A=hx(a),B=hx(b);
+    return '#'+[0,1,2].map(i=>Math.round(lerp(A[i],B[i],t)).toString(16).padStart(2,'0')).join(''); };
+
+  /* one keyframe per scroll "stop" — edit these to art-direct the journey */
+  const stops = [
+    { zoom:1.18, ring:1.00, spin:0.16, morph:0.85, yaw: 0.00, pitch: 0.00, c0:'#101c33', c1:'#33507a' },
+    { zoom:1.55, ring:0.82, spin:0.55, morph:1.00, yaw: 0.65, pitch: 0.32, c0:'#0b2e3a', c1:'#2f7d92' },
+    { zoom:1.00, ring:1.22, spin:-0.45,morph:0.60, yaw:-0.55, pitch: 0.48, c0:'#241452', c1:'#6a4a9a' },
+    { zoom:1.30, ring:0.72, spin:0.25, morph:0.92, yaw: 0.30, pitch:-0.22, c0:'#3a1220', c1:'#9a5a4a' },
+  ];
+
+  const target = {};
+  function sampleScroll(){
+    const max = document.documentElement.scrollHeight - innerHeight;
+    const p = max > 0 ? Math.min(1, Math.max(0, scrollY / max)) : 0;
+    const seg = p * (stops.length - 1);
+    const i = Math.min(stops.length - 2, Math.floor(seg));
+    const t = seg - i, A = stops[i], B = stops[i+1];
+    target.zoom  = lerp(A.zoom,  B.zoom,  t);
+    target.ring  = lerp(A.ring,  B.ring,  t);
+    target.spin  = lerp(A.spin,  B.spin,  t);
+    target.morph = lerp(A.morph, B.morph, t);
+    target.yaw   = lerp(A.yaw,   B.yaw,   t);
+    target.pitch = lerp(A.pitch, B.pitch, t);
+    target.c0 = mixHex(A.c0, B.c0, t);
+    target.c1 = mixHex(A.c1, B.c1, t);
+  }
+
+  /* per-frame easing toward the scroll target = momentum / smoothness.
+     (Scroll is already continuous; this just adds a premium lag.) */
+  function tick(){
+    sampleScroll();
+    const k = 0.10;
+    S.zoom  += (target.zoom  - S.zoom ) * k;
+    S.ring  += (target.ring  - S.ring ) * k;
+    S.spin  += (target.spin  - S.spin ) * k;
+    S.morph += (target.morph - S.morph) * k;
+    if (!drag.on){                       // scroll orbits it, but user drag wins
+      drag.yaw   += (target.yaw   - drag.yaw  ) * k;
+      drag.pitch += (target.pitch - drag.pitch) * k;
+    }
+    if (blobs[0]) blobs[0].color = mixHex(blobs[0].color, target.c0, k);
+    if (blobs[1]) blobs[1].color = mixHex(blobs[1].color, target.c1, k);
+    requestAnimationFrame(tick);
+  }
+  tick();
+})();
+</script>
+</body>
+</html>

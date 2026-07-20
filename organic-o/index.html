@@ -194,7 +194,7 @@
         <option value="7">7 · Hard-TIR fallback</option>
         <option value="8">8 · Exit normal = front normal</option>
         <option value="9">9 · No curvature highlight</option>
-        <option value="10">10 · Restore fwidth (repro)</option>
+        <option value="10">10 · Thin AA width (repro aliasing)</option>
         <option value="11">11 · No hash/jitter/noise</option>
         <option value="12">12 · No tone map</option>
       </select></div>
@@ -764,6 +764,15 @@ void main(){
       vec4 nc = nrmCurv(p, epsN);
       vec3 n = nc.xyz;
       dN = n; dKap = nc.w;
+      float ndv = clamp(dot(n, -rd), 0.0, 1.0);
+
+      /* analytic screen-space footprint of a reflected/refracted ray:
+         pixel size (wppH -> scales with DPR/resolution) x surface curvature
+         (~1/uTube) / grazing factor. Derivative-FREE, so it has no
+         undefined-derivative seams, and unlike a fixed width it widens in
+         tight-curvature and grazing zones where studio strips would alias. */
+      float envAA = clamp(1.6 * wppH / (max(uTube, 0.05) * max(ndv, 0.12)),
+                          0.04, 0.5);
 
       float kRel = clamp(nc.w * max(uTube, 0.05), 0.25, 3.0);
       float rough = (uIso==9) ? uHiWidth
@@ -823,17 +832,15 @@ void main(){
 
       vec3 pEx = cOrig + cDir*Lr;
       dEresid = abs(map(pEx));
-      vec3 nEx = (uIso==8) ? n : nrmCurv(pEx, epsN*2.0).xyz;
-      dNEx = nEx;
-      vec4 exG;
-      if (uIso==7){
-        vec3 rr = refract(cDir, -nEx, uIOR);
-        exG = (dot(rr,rr) < 0.5) ? vec4(reflect(cDir,-nEx),0.0) : vec4(normalize(rr),1.0);
-      } else {
-        exG = refrSmooth(cDir, -nEx, uIOR);
-      }
-      dTIR = exG.w;
-      vec3 rdOut = (uIso==3) ? rd : normalize(mix(rd, exG.xyz, uRefrStr));
+      dNEx = nrmCurv(pEx, epsN*2.0).xyz;   // captured for debug only
+      /* The marched exit point is step-quantized, so a fresh normal there
+         jumps between adjacent pixels -> those jumps drew the dotted arcs.
+         Derive the exit/transmission direction from the CONTINUOUS front
+         normal instead (thin-shell approximation). The marched chord Lr is
+         still used for the volume integral, where it is averaged over 22
+         samples and insensitive to the per-pixel jump. */
+      dTIR = 1.0;
+      vec3 rdOut = (uIso==3) ? rd : normalize(mix(rd, rdIn, uRefrStr));
       dRefr = rdOut;
 
       float milk = (1.0 - exp(-(Lr*uFrost*0.9 + shellT*uFrost*2.4)))
@@ -855,11 +862,9 @@ void main(){
         seenL = toLin(bg);
       }
 
-      /* env AA width: FIXED conservative default (no derivatives — avoids
-         the undefined-derivative UB across the divergent exit march). The
-         'fwidth (repro)' isolation restores the derivative form to A/B it. */
-      float aaFixed = 0.05;
-      float aaT = (uIso==10) ? (length(fwidth(rdOut))*2.2 + 0.03) : (aaFixed + 0.02);
+      /* env AA width: analytic footprint (see envAA above). No derivatives.
+         uIso 10 forces a thin width to reproduce the aliasing for A/B. */
+      float aaT = (uIso==10) ? 0.02 : envAA;
       vec3 envRawT = envStudio(rdOut, 0.0, 0.6);
       vec3 envT;
       if (uIso==5){ envT = vec3(0.6); }
@@ -881,12 +886,11 @@ void main(){
       float form = 0.5 + 0.5*dot(n, ldv);
       trans *= mix(1.0, 0.70 + 0.42*form, uLight*0.8);
 
-      float ndv = clamp(dot(n, -rd), 0.0, 1.0);
       float F = (uIso==4) ? 0.0
                : clamp((uF0 + (1.0 - uF0)*pow(1.0 - ndv, 5.0)) * uFresStr, 0.0, 1.0);
       dF = F;
       vec3 Rr = reflect(rd, n);
-      float aaR = (uIso==10) ? (length(fwidth(Rr))*2.2) : aaFixed;
+      float aaR = (uIso==10) ? 0.02 : envAA;
       vec3 refl = (uIso==5) ? vec3(0.6)*uReflStr
                  : envStudio(Rr, max(rough, aaR), uHiInt) * uReflStr;
       dRefl = Rr;

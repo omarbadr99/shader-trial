@@ -122,6 +122,9 @@
     <div class="ctl"><label>Ink gravity <b id="v-gravity"></b></label>
       <input type="range" id="gravity" min="0" max="1" step="0.01"></div>
 
+    <div class="ctl"><label>Cursor range <b id="v-crange"></b></label>
+      <input type="range" id="crange" min="0.1" max="1.5" step="0.01"></div>
+
     <div class="sec">FLUID COUPLING — liquid moves the shell</div>
 
     <div class="ctl"><label>Fluid coupling <b id="v-fluid"></b></label>
@@ -1096,12 +1099,13 @@ function mkBlob(over){
     angle: Math.random()*Math.PI*2,
     dPh: Math.random()*Math.PI*2,
     dFq: 0.35 + Math.random()*0.5,  // rad/s of the drift oscillation
+    _prox: 0,                       // live cursor-proximity weight 0..1
   }, over || {});
 }
 
 const PRESETS = {
   reference: {
-    dials: { ink:0.95, gravity:0.82, light:0.9, glare:0.85, speed:1,
+    dials: { ink:0.95, gravity:0.82, crange:0.6, light:0.9, glare:0.85, speed:1,
              fluid:0.45, fcenter:0.1, fthick:0.4, fdepth:0.12, flag:0.35, fsmooth:0.5,
              spin:0.16, tilt:0.45, tiltspd:1.0, wob:0.22, wobspd:0.5,
              morph:0.85, morphspd:0.45,
@@ -1145,7 +1149,7 @@ const PRESETS = {
   },
 };
 
-const DIALS = ["ink","gravity","fluid","fcenter","fthick","fdepth","flag","fsmooth",
+const DIALS = ["ink","gravity","crange","fluid","fcenter","fthick","fdepth","flag","fsmooth",
                "light","glare","speed","spin","tilt","tiltspd","wob",
                "wobspd","morph","morphspd","ring","lobe","stretch","tube","flat","taper",
                "zoom","frost","wall","speckle","soft","grain","bg",
@@ -1405,7 +1409,7 @@ document.getElementById("bgfile").addEventListener("change", e => {
    Pointer: drag = orbit; cursor angle can drive blobs marked "cursor"
 ============================================================ */
 const drag = { on:false, x:0, y:0, yaw:0, pitch:0 };
-const cursor = { angle:0, has:false };
+const cursor = { angle:0, has:false, dist:9 };
 
 canvas.addEventListener("pointerdown", e => {
   drag.on = true; drag.x = e.clientX; drag.y = e.clientY;
@@ -1415,6 +1419,7 @@ canvas.addEventListener("pointerdown", e => {
 canvas.addEventListener("pointermove", e => {
   const cx = e.clientX - innerWidth/2, cy = innerHeight/2 - e.clientY;
   cursor.angle = Math.atan2(cy, cx);
+  cursor.dist  = Math.hypot(cx, cy) / innerHeight;   // 0 at centre, ~0.4 at O edge
   cursor.has = true;
   if (!drag.on) return;
   drag.yaw   += (e.clientX - drag.x) * 0.005;
@@ -1423,6 +1428,7 @@ canvas.addEventListener("pointermove", e => {
   drag.x = e.clientX; drag.y = e.clientY;
 });
 addEventListener("pointerup", () => { drag.on = false; canvas.classList.remove("dragging"); });
+document.addEventListener("mouseleave", () => { cursor.dist = 9; });   // out of window -> far
 
 /* ============================================================
    Render loop.
@@ -1436,6 +1442,10 @@ const ph = { t: 0, spin: 0, org: 0, morph: 0, stretchA: 0.8 };
 let last = performance.now();
 let frameN = 0;
 
+function smoothstep(e0, e1, x){
+  const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
+  return t*t*(3 - 2*t);
+}
 function shortestArc(a, b){
   let d = (b - a) % (Math.PI*2);
   if (d >  Math.PI) d -= Math.PI*2;
@@ -1470,12 +1480,18 @@ function frame(now){
     ph.org  += dts * S.wobspd * 1.1;
     ph.morph += dts * S.morphspd * 0.45;
     for (const b of blobs){
+      /* free lava-lamp drift (speed breathes, can briefly reverse) */
+      const mod = 1 + b.drift * Math.sin(ph.t*b.dFq + b.dPh);
+      const driftStep = dts * b.speed * mod;
       if (b.follow && cursor.has){
-        b.angle += shortestArc(b.angle, cursor.angle) * Math.min(1, dt*4);
+        /* follow only while the cursor is within Cursor range of the O,
+           easing back to drift over a soft band as it moves away */
+        b._prox = 1 - smoothstep(S.crange - 0.3, S.crange, cursor.dist);
+        const followStep = shortestArc(b.angle, cursor.angle) * Math.min(1, dt*4);
+        b.angle += (1 - b._prox)*driftStep + b._prox*followStep;
       } else {
-        /* lava-lamp drift: speed breathes, can briefly reverse at high drift */
-        const mod = 1 + b.drift * Math.sin(ph.t*b.dFq + b.dPh);
-        b.angle += dts * b.speed * mod;
+        b._prox = 0;
+        b.angle += driftStep;
       }
     }
   }
@@ -1492,7 +1508,7 @@ function frame(now){
     blobA[i*4]   = b.angle;
     blobA[i*4+1] = b.size;
     /* tail trails opposite the direction of travel */
-    blobA[i*4+2] = b.tail * (b.speed >= 0 ? -1 : 1) * (b.follow ? 0.3 : 1);
+    blobA[i*4+2] = b.tail * (b.speed >= 0 ? -1 : 1) * (1.0 - 0.7*(b._prox || 0));
     blobA[i*4+3] = b.amt;
     const A = absorb(b.color);
     blobAbs[i*3] = A[0]; blobAbs[i*3+1] = A[1]; blobAbs[i*3+2] = A[2];
@@ -1551,7 +1567,7 @@ function frame(now){
     pressB[i*4]   = b.angle;
     pressB[i*4+1] = Math.min(7, Math.max(0.7, 2/(sigma*sigma)));  // lobe exponent
     pressB[i*4+2] = b.amt;
-    pressB[i*4+3] = b.follow ? 0 : (Math.sign(b.speed) || 1);     // travel dir
+    pressB[i*4+3] = (b.follow && (b._prox || 0) > 0.5) ? 0 : (Math.sign(b.speed) || 1);  // travel dir
   }
   let pMean = 0, pM2 = 0;
   {

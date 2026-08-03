@@ -798,10 +798,26 @@ void main(){
          normal across the crease so it reads as a smooth micro-bend, not a
          line, at any resolution. */
       float epsN = clamp(0.9*wppH, 0.007, 0.02) * (1.0 + 0.5*uFluid);
-      vec4 nc = nrmCurv(p, epsN);
-      vec3 n = nc.xyz;
-      if (dot(n, n) < 0.5) n = normalize(-rd);   // degenerate gradient -> face camera
-      dN = n; dKap = nc.w;
+      /* Normal with a scale-invariant degenerate-gradient fallback. Toward the
+         SDF's medial axis the gradient magnitude collapses; normalizing that
+         tiny, noisy (or NaN) vector was the dotted white/black specks. Compare
+         a FINE gradient to a COARSE one (4x epsilon, which averages across the
+         crease and stays well-defined). Where the fine gradient is anomalously
+         small vs the coarse expectation, blend smoothly to the coarse normal.
+         This PREVENTS the bad normal — no detect-after-NaN, which is
+         unreliable under Metal fast-math. */
+      vec2 eN = vec2(epsN, -epsN);
+      float g1 = map(p+eN.xyy), g2 = map(p+eN.yyx), g3 = map(p+eN.yxy), g4 = map(p+eN.xxx);
+      vec3 grad = eN.xyy*g1 + eN.yyx*g2 + eN.yxy*g3 + eN.xxx*g4;
+      vec2 eC = 4.0*eN;
+      float c1 = map(p+eC.xyy), c2 = map(p+eC.yyx), c3 = map(p+eC.yxy), c4 = map(p+eC.xxx);
+      vec3 gradC = eC.xyy*c1 + eC.yyx*c2 + eC.yxy*c3 + eC.xxx*c4;
+      float gm = length(grad), gcm = length(gradC);
+      vec3 nCoarse = gcm > 1e-7 ? gradC/gcm : -rd;
+      vec3 nFine   = gm  > 1e-7 ? grad/gm   : nCoarse;
+      float conf = smoothstep(0.2, 0.7, gm / max(gcm*0.25, 1e-7));  // fine vs expected
+      vec3 n = normalize(mix(nCoarse, nFine, conf));
+      dN = n; dKap = (g1+g2+g3+g4)*0.25/(epsN*epsN*uSafe*uFlat);
       float ndv = clamp(dot(n, -rd), 0.0, 1.0);
 
       /* env AA from MEASURED local curvature (derivative-free): re-sample the
@@ -817,7 +833,7 @@ void main(){
       float curv = length(nT - n) / max(wppH, 1e-5);          // ~ 1/radius, or huge at a kink
       float envAA = clamp((0.5 + 2.4*curv) * wppH / max(ndv, 0.12), 0.03, 0.6);
 
-      float kRel = clamp(nc.w * max(uTube, 0.05), 0.25, 3.0);
+      float kRel = clamp(dKap * max(uTube, 0.05), 0.25, 3.0);
       float rough = (uIso==9) ? uHiWidth
                    : clamp(uHiWidth * mix(1.0, 1.0/kRel, uCurvResp), 0.015, 0.4);
       float noJ = (uIso==11) ? 0.0 : 1.0;

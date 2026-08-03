@@ -624,7 +624,13 @@ vec4 nrmCurv(vec3 p, float eps){
   vec2 e = vec2(eps, -eps);
   float d1 = map(p + e.xyy), d2 = map(p + e.yyx),
         d3 = map(p + e.yxy), d4 = map(p + e.xxx);
-  vec3 n = normalize(e.xyy*d1 + e.yyx*d2 + e.yxy*d3 + e.xxx*d4);
+  vec3 g = e.xyy*d1 + e.yyx*d2 + e.yxy*d3 + e.xxx*d4;
+  float gl = length(g);
+  /* the SDF gradient VANISHES on the medial axis (a curved skeleton inside
+     the rounded-triangle field); normalize(0) there = NaN, which rendered as
+     the dotted white/black specks. Return zero when degenerate; the caller
+     substitutes a finite fallback. */
+  vec3 n = gl > 1e-6 ? g / gl : vec3(0.0);
   float kappa = (d1 + d2 + d3 + d4) * 0.25 / (eps*eps * uSafe * uFlat);
   return vec4(n, kappa);
 }
@@ -794,6 +800,7 @@ void main(){
       float epsN = clamp(0.9*wppH, 0.007, 0.02) * (1.0 + 0.5*uFluid);
       vec4 nc = nrmCurv(p, epsN);
       vec3 n = nc.xyz;
+      if (dot(n, n) < 0.5) n = normalize(-rd);   // degenerate gradient -> face camera
       dN = n; dKap = nc.w;
       float ndv = clamp(dot(n, -rd), 0.0, 1.0);
 
@@ -806,6 +813,7 @@ void main(){
          pixel footprint and the grazing factor. */
       vec3 tang = normalize(cross(n, rd) + vec3(1e-4, 0.0, 0.0));
       vec3 nT   = nrmCurv(p + tang * wppH, epsN).xyz;
+      if (dot(nT, nT) < 0.5) nT = n;                          // degenerate -> no curvature
       float curv = length(nT - n) / max(wppH, 1e-5);          // ~ 1/radius, or huge at a kink
       float envAA = clamp((0.5 + 2.4*curv) * wppH / max(ndv, 0.12), 0.03, 0.6);
 
@@ -1089,6 +1097,10 @@ void main(){
 
   float g = hash(gl_FragCoord.xy) - 0.5;
   col += g * uGrain * (0.35 + 0.65*alpha);
+
+  /* last-resort guard: never emit a NaN/Inf pixel (they render as white/black
+     specks). Fall back to the local background so it is invisible. */
+  if (any(isnan(col)) || any(isinf(col))) col = bg;
 
   O = vec4(col, 1.0);
 }`;

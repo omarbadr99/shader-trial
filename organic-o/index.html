@@ -319,6 +319,23 @@
       <input type="file" id="bgfile" accept="image/*" style="display:none">
     </div>
 
+    <div class="ctl toggles" style="display:flex; gap:14px">
+      <label style="display:flex;gap:5px;cursor:pointer"><input type="checkbox" id="flipx"> Flip X</label>
+      <label style="display:flex;gap:5px;cursor:pointer"><input type="checkbox" id="flipy"> Flip Y</label>
+    </div>
+    <div class="ctl"><label>Image fit</label>
+      <div class="btnrow" id="imgfit">
+        <button data-f="cover">Cover</button>
+        <button data-f="contain">Contain</button>
+      </div>
+    </div>
+    <div class="ctl"><label>Image scale <b id="v-imgzoom"></b></label>
+      <input type="range" id="imgzoom" min="0.2" max="3" step="0.01" value="1"></div>
+    <div class="ctl"><label>Image offset X <b id="v-imgox"></b></label>
+      <input type="range" id="imgox" min="-1" max="1" step="0.01" value="0"></div>
+    <div class="ctl"><label>Image offset Y <b id="v-imgoy"></b></label>
+      <input type="range" id="imgoy" min="-1" max="1" step="0.01" value="0"></div>
+
     <div class="ctl"><label>Frost <b id="v-frost"></b></label>
       <input type="range" id="frost" min="0" max="1" step="0.01"></div>
 
@@ -400,7 +417,10 @@ uniform float uSoft;              // silhouette AA in pixels
 uniform float uJitter;            // per-frame dither for the volume integral
 uniform sampler2D uBgTex;         // backdrop image (see-through frost)
 uniform float uBgMode;            // 0 = flat color, 1 = texture
-uniform vec2  uTexScale;          // cover-fit scale for the backdrop
+uniform vec2  uTexScale;          // aspect-fit scale for the backdrop
+uniform vec2  uTexFlip;           // per-axis sign (y = -1 corrects GL flip)
+uniform float uTexZoom;           // backdrop scale
+uniform vec2  uTexOffset;         // backdrop pan
 
 uniform int   uBlobN;
 uniform vec4  uBlobA[MAXB];       // x angle, y half-width(rad), z tail(signed), w strength
@@ -728,7 +748,10 @@ void main(){
 
   /* background: flat color or a backdrop image; slight vignette + a soft
      shadow that pools below the object (key light comes from above) */
-  vec2 suv = (gl_FragCoord.xy/uRes - 0.5)*uTexScale + 0.5;
+  vec2 suv = (gl_FragCoord.xy/uRes - 0.5) * uTexScale / max(uTexZoom, 0.01);
+  suv.x *= uTexFlip.x;
+  suv.y *= uTexFlip.y;
+  suv += 0.5 + uTexOffset;
   vec3 bgBase = uBgMode > 0.5 ? texture(uBgTex, suv).rgb : uBg;
   float vig = length(uv)*0.5;
   vec3 bg = bgBase * (1.0 - 0.04*vig*vig) * (1.0 + 0.008*uv.y);
@@ -1075,7 +1098,7 @@ gl.useProgram(prog);
 const U = {};
 ["uRes","uYaw","uPitch","uSpinPhase","uOrgPhase","uZoom","uTube","uFlat","uTaper",
  "uCornerW","uStretch","uStretchA","uOrganic","uInk","uGravity","uLight","uGlare","uFrost","uWall","uSpeckle",
- "uGrain","uBg","uSoft","uRing","uJitter","uBgTex","uBgMode","uTexScale",
+ "uGrain","uBg","uSoft","uRing","uJitter","uBgTex","uBgMode","uTexScale","uTexFlip","uTexZoom","uTexOffset",
  "uFluid","uCenterAmt","uThickAmt","uDepthAmt","uGeoLag","uPMean","uPVar",
  "uSafe","uPressN","uPressB","uBlobN","uBlobA","uBlobAbs",
  "uOptV1","uExposure","uRolloff","uLift","uShellTh","uShellCl","uCoreSoft",
@@ -1375,6 +1398,7 @@ try {
 } catch(e){}
 
 let bgMode = 0, texW = 1, texH = 1;
+const texCfg = { flipX:false, flipY:false, fit:"cover", zoom:1, ox:0, oy:0 };
 function setTexImage(src, w, h){
   gl.bindTexture(gl.TEXTURE_2D, bgTex);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
@@ -1408,6 +1432,17 @@ document.getElementById("bgfile").addEventListener("change", e => {
   img.onload = () => { setTexImage(img, img.naturalWidth, img.naturalHeight); URL.revokeObjectURL(img.src); };
   img.src = URL.createObjectURL(file);
 });
+document.getElementById("flipx").addEventListener("change", e => { texCfg.flipX = e.target.checked; });
+document.getElementById("flipy").addEventListener("change", e => { texCfg.flipY = e.target.checked; });
+document.getElementById("imgfit").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (b) texCfg.fit = b.dataset.f;
+});
+document.getElementById("imgzoom").addEventListener("input", e => {
+  texCfg.zoom = +e.target.value; const l=document.getElementById("v-imgzoom"); if(l) l.textContent = fmt(texCfg.zoom); });
+document.getElementById("imgox").addEventListener("input", e => {
+  texCfg.ox = +e.target.value; const l=document.getElementById("v-imgox"); if(l) l.textContent = fmt(texCfg.ox); });
+document.getElementById("imgoy").addEventListener("input", e => {
+  texCfg.oy = +e.target.value; const l=document.getElementById("v-imgoy"); if(l) l.textContent = fmt(texCfg.oy); });
 
 /* ============================================================
    Pointer: drag = orbit; cursor angle can drive blobs marked "cursor"
@@ -1557,8 +1592,13 @@ function frame(now){
   gl.uniform1f(U.uBgMode, bgMode);
   {
     const ca = canvas.width / canvas.height, ta = texW / texH;
-    const sc = ta > ca ? [ca/ta, 1] : [1, ta/ca];
+    const sc = texCfg.fit === "contain"
+      ? (ta > ca ? [1, ta/ca] : [ca/ta, 1])     // whole image visible
+      : (ta > ca ? [ca/ta, 1] : [1, ta/ca]);    // cover: fill, crop
     gl.uniform2f(U.uTexScale, sc[0], sc[1]);
+    gl.uniform2f(U.uTexFlip, texCfg.flipX ? -1 : 1, texCfg.flipY ? 1 : -1);  // y=-1 upright
+    gl.uniform1f(U.uTexZoom, texCfg.zoom);
+    gl.uniform2f(U.uTexOffset, texCfg.ox, texCfg.oy);
   }
   /* ---- fluid pressure field: pack lobes, centre numerically ----
      Same formula as the shader (raised-cosine^k). The mean is computed

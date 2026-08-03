@@ -789,13 +789,17 @@ void main(){
       dN = n; dKap = nc.w;
       float ndv = clamp(dot(n, -rd), 0.0, 1.0);
 
-      /* analytic screen-space footprint of a reflected/refracted ray:
-         pixel size (wppH -> scales with DPR/resolution) x surface curvature
-         (~1/uTube) / grazing factor. Derivative-FREE, so it has no
-         undefined-derivative seams, and unlike a fixed width it widens in
-         tight-curvature and grazing zones where studio strips would alias. */
-      float envAA = clamp(1.6 * wppH / (max(uTube, 0.05) * max(ndv, 0.12)),
-                          0.04, 0.5);
+      /* env AA from MEASURED local curvature (derivative-free): re-sample the
+         surface normal one world-pixel away along a surface tangent, and use
+         how much it turned. Smooth high-curvature -> wide AA; a raymarch
+         normal KINK (a tiny per-pixel discontinuity that high resolution does
+         NOT resolve away) also reads as a large local turn, so the env
+         softens exactly where a thin line would otherwise form. Scaled by the
+         pixel footprint and the grazing factor. */
+      vec3 tang = normalize(cross(n, rd) + vec3(1e-4, 0.0, 0.0));
+      vec3 nT   = nrmCurv(p + tang * wppH, epsN).xyz;
+      float curv = length(nT - n) / max(wppH, 1e-5);          // ~ 1/radius, or huge at a kink
+      float envAA = clamp((0.5 + 2.4*curv) * wppH / max(ndv, 0.12), 0.03, 0.6);
 
       float kRel = clamp(nc.w * max(uTube, 0.05), 0.25, 3.0);
       float rough = (uIso==9) ? uHiWidth

@@ -9,6 +9,14 @@ import { addPropertyControls, ControlType, RenderTarget } from "framer"
  * scrolls up. Pure SVG filters on the text's alpha channel — text stays
  * real and selectable, and any text color is inherited automatically.
  *
+ * The bleed does not advance as a straight horizontal front. Every word is
+ * offset by a field of noise anchored to the PAGE, so the ink arrives in
+ * irregular blotches — one word drowns while its neighbour stays crisp —
+ * and a blotch stays glued to its word as you scroll. "Unevenness" sets how
+ * far a word may run ahead of or behind the bleed line; "Blotch scale" sets
+ * whether the ink pools in broad continents or scatters as fine speckle.
+ * Unevenness at 0 collapses back to a clean uniform gradient.
+ *
  * Two ways to use it:
  *  1. "Target names": type the names of text layers on your page
  *     (comma-separated). The effect finds and drives them wherever they are.
@@ -23,11 +31,10 @@ import { addPropertyControls, ControlType, RenderTarget } from "framer"
  * @framerIntrinsicHeight 48
  */
 
-const LEVELS = 8
+const LEVELS = 10
 const BUCKETS: Record<string, number> = { S: 0.55, M: 1.0, L: 1.8 }
 
 interface Dials {
-    area: number
     intensity: number
     randomness: number
     spray: number
@@ -70,7 +77,14 @@ function filterXML(uid: string, P: Dials, bucket: string, k: number): string {
     const dragScl = ((P.drag / 100) * 55 * s * sf).toFixed(1)
     const dripBlur = ((P.drag / 100) * 9 * s * sf).toFixed(2)
 
-    let f = `<filter id="${uid}-${bucket}-${k}" x="-15%" width="130%" y="-180%" height="460%" color-interpolation-filters="sRGB">`
+    // filter region: targets are often single short words, and spray and drag
+    // both throw ink well outside the glyph box — but the region is the single
+    // biggest cost driver (every primitive runs over every pixel of it), so it
+    // grows only as far as the enabled effects actually reach
+    const mv = Math.round(55 + (P.spray / 100) * 145 + (P.drag / 100) * 190)
+    const mh = Math.round(20 + (P.spray / 100) * 48)
+
+    let f = `<filter id="${uid}-${bucket}-${k}" x="-${mh}%" width="${mh * 2 + 100}%" y="-${mv}%" height="${mv * 2 + 100}%" color-interpolation-filters="sRGB">`
 
     let base = "SourceGraphic"
     if (P.drag > 0) {
@@ -129,7 +143,41 @@ function buildFilters(uid: string, P: Dials): string {
     return xml
 }
 
-/* ---- split a text element into word spans so lines degrade separately -- */
+/* ---- deterministic 2D value noise, sampled in PAGE coordinates --------- */
+function hash2(ix: number, iy: number, seed: number): number {
+    let n =
+        Math.imul(ix | 0, 374761393) +
+        Math.imul(iy | 0, 668265263) +
+        Math.imul(seed | 0, 362437)
+    n = Math.imul(n ^ (n >>> 13), 1274126177)
+    return ((n ^ (n >>> 16)) >>> 0) / 4294967295
+}
+function vnoise(x: number, y: number, seed: number): number {
+    const ix = Math.floor(x),
+        iy = Math.floor(y)
+    const fx = x - ix,
+        fy = y - iy
+    const ux = fx * fx * (3 - 2 * fx),
+        uy = fy * fy * (3 - 2 * fy)
+    const a = hash2(ix, iy, seed),
+        b = hash2(ix + 1, iy, seed)
+    const c = hash2(ix, iy + 1, seed),
+        d = hash2(ix + 1, iy + 1, seed)
+    return (a + (b - a) * ux) * (1 - uy) + (c + (d - c) * ux) * uy
+}
+function fbm(x: number, y: number, seed: number): number {
+    return (
+        0.64 * vnoise(x, y, seed) +
+        0.36 * vnoise(x * 2.4 + 11, y * 2.4 - 7, seed + 91)
+    )
+}
+const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v)
+function smoothstep(e0: number, e1: number, v: number) {
+    const t = clamp01((v - e0) / (e1 - e0))
+    return t * t * (3 - 2 * t)
+}
+
+/* ---- split a text element into per-word spans -------------------------- */
 function splitToWords(el: HTMLElement): HTMLElement[] {
     const anyEl = el as any
     if (anyEl._inkOrig == null) anyEl._inkOrig = el.innerHTML
@@ -143,10 +191,12 @@ function splitToWords(el: HTMLElement): HTMLElement[] {
         const frag = document.createDocumentFragment()
         for (const piece of (node.nodeValue || "").split(/(\s+)/)) {
             if (!piece) continue
-            if (/^\s+$/.test(piece)) frag.appendChild(document.createTextNode(piece))
+            if (/^\s+$/.test(piece))
+                frag.appendChild(document.createTextNode(piece))
             else {
                 const sp = document.createElement("span")
                 sp.setAttribute("data-ink-w", "")
+                sp.style.display = "inline-block"
                 sp.textContent = piece
                 frag.appendChild(sp)
             }
@@ -162,9 +212,11 @@ export default function InkBleed(props: any) {
     const {
         content,
         targetNames = "",
-        splitLines = true,
+        perWord = true,
         area = 45,
         intensity = 60,
+        uneven = 55,
+        blotch = 50,
         randomness = 45,
         spray = 45,
         solidity = 90,
@@ -174,16 +226,12 @@ export default function InkBleed(props: any) {
         seed = 7,
     } = props
 
-    const uid = React.useMemo(
-        () => "inkf" + Math.floor(Math.random() * 1e6),
-        []
-    )
+    const uid = React.useMemo(() => "inkf" + Math.floor(Math.random() * 1e6), [])
     const rootRef = React.useRef<HTMLDivElement>(null)
 
     const defsHTML = React.useMemo(
         () =>
             buildFilters(uid, {
-                area,
                 intensity,
                 randomness,
                 spray,
@@ -225,29 +273,76 @@ export default function InkBleed(props: any) {
             (u) => !all.some((o) => o !== u && o.contains(u))
         )
 
-        /* ---- build targets (whole elements, or word spans per line) ---- */
-        type Target = { el: HTMLElement; bucket: string; unit: any; lvl?: number }
+        /* ---- build targets: whole elements, or one per word ------------- */
+        type Target = {
+            el: HTMLElement
+            bucket: string
+            unit: any
+            lvl?: number
+            pyTop: number
+            pyBot: number
+            pcx: number
+            pcy: number
+        }
         const targets: Target[] = []
+        const unitTargets = new Map<HTMLElement, Target[]>()
+
         for (const u of units) {
-            const fs = parseFloat(getComputedStyle(u).fontSize) || 16
-            const bucket = fs < 26 ? "S" : fs <= 60 ? "M" : "L"
             let els: HTMLElement[] = [u]
-            if (splitLines) {
+            if (perWord) {
                 const words = splitToWords(u)
-                const tops = new Set(
-                    words.map((w) => Math.round(w.getBoundingClientRect().top / 4))
-                )
-                if (words.length > 1 && tops.size > 1) {
-                    els = words
-                } else {
+                if (words.length > 1) els = words
+                else {
                     u.innerHTML = (u as any)._inkOrig
                     ;(u as any)._inkOrig = null
                 }
             }
-            for (const el of els) targets.push({ el, bucket, unit: u })
+            const list: Target[] = []
+            for (const el of els) {
+                const fs = parseFloat(getComputedStyle(el).fontSize) || 16
+                const t: Target = {
+                    el,
+                    bucket: fs < 26 ? "S" : fs <= 60 ? "M" : "L",
+                    unit: u,
+                    pyTop: 0,
+                    pyBot: 0,
+                    pcx: 0,
+                    pcy: 0,
+                }
+                targets.push(t)
+                list.push(t)
+            }
+            unitTargets.set(u, list)
+            ;(u as any)._inkTargets = list
         }
 
-        /* ---- level assignment ------------------------------------------ */
+        /* ---- cache page coordinates: scrolling never re-reads layout ---- */
+        const measure = () => {
+            const sy = window.scrollY,
+                sx = window.scrollX
+            for (const t of targets) {
+                const r = t.el.getBoundingClientRect()
+                t.pyTop = r.top + sy
+                t.pyBot = r.bottom + sy
+                t.pcx = r.left + r.width / 2 + sx
+                t.pcy = r.top + r.height / 2 + sy
+            }
+        }
+
+        /* ---- the per-word offset that breaks up the front --------------- */
+        const unevenOffset = (t: Target) => {
+            const u = uneven / 100
+            if (u <= 0) return 0
+            const cell = 45 + (blotch / 100) * 655 // 45px speckle → 700px continents
+            const n = fbm(t.pcx / (cell * 1.35), t.pcy / cell, seed)
+            const j = hash2(
+                Math.round(t.pcx * 0.37),
+                Math.round(t.pcy * 0.41),
+                seed + 555
+            )
+            return u * (0.72 * n + 0.28 * j - 0.5) * 2.3
+        }
+
         const setF = (t: Target, lvl: number) => {
             if (t.lvl === lvl) return
             t.lvl = lvl
@@ -256,32 +351,48 @@ export default function InkBleed(props: any) {
 
         const assign = () => {
             const vh = window.innerHeight
-            let startY: number, span: number
+            const sy = window.scrollY
+            let startY: number, span: number, originY: number
             if (isCanvas) {
                 // on the canvas, preview the gradient across the component frame
                 const rr = root.getBoundingClientRect()
-                startY = rr.top + rr.height * (area / 100)
-                span = Math.max(1, rr.bottom - startY)
+                originY = rr.top + sy
+                startY = rr.height * (area / 100)
+                span = Math.max(1, rr.height - startY)
             } else {
+                originY = sy
                 startY = vh * (area / 100)
                 span = Math.max(1, vh - startY)
             }
             for (const t of targets) {
                 if (t.unit._inkHover) continue
-                const r = t.el.getBoundingClientRect()
-                if (!isCanvas && (r.bottom < -100 || r.top > vh + 300)) {
+                const top = t.pyTop - originY,
+                    bot = t.pyBot - originY
+                if (!isCanvas && (bot < -140 || top > vh + 340)) {
                     setF(t, 0)
                     continue
                 }
-                let n = ((r.top + r.bottom) / 2 - startY) / span
-                n = Math.min(1, Math.max(0, n))
-                n = Math.pow(n, 1.3)
-                setF(t, Math.round(n * LEVELS))
+                const raw = ((top + bot) / 2 - startY) / span
+                const base = Math.pow(clamp01(raw), 1.3)
+                // gate: keep the clean end clean, and taper the randomness at
+                // the far end so everything still drowns at the edge
+                const gate =
+                    smoothstep(-0.55, 0.15, raw) * (1 - 0.35 * clamp01(raw))
+                setF(
+                    t,
+                    Math.round(
+                        clamp01(base + unevenOffset(t) * gate) * LEVELS
+                    )
+                )
             }
         }
 
+        measure()
         assign()
-        ;(document as any).fonts?.ready?.then?.(assign)
+        ;(document as any).fonts?.ready?.then?.(() => {
+            measure()
+            assign()
+        })
 
         /* ---- listeners --------------------------------------------------- */
         let raf = 0
@@ -292,6 +403,10 @@ export default function InkBleed(props: any) {
                 assign()
             })
         }
+        const onResize = () => {
+            measure()
+            onScroll()
+        }
         const hoverHandlers: Array<[HTMLElement, () => void, () => void]> = []
 
         if (!isCanvas) {
@@ -299,31 +414,26 @@ export default function InkBleed(props: any) {
                 capture: true,
                 passive: true,
             })
-            window.addEventListener("resize", onScroll)
+            window.addEventListener("resize", onResize)
 
             if (hoverClears) {
-                const byUnit = new Map<any, Target[]>()
-                for (const t of targets) {
-                    if (!byUnit.has(t.unit)) byUnit.set(t.unit, [])
-                    byUnit.get(t.unit)!.push(t)
-                }
-                for (const [u, ts] of byUnit) {
+                for (const [u, ts] of unitTargets) {
                     const enter = () => {
-                        u._inkHover = true
-                        clearInterval(u._inkAnim)
-                        u._inkAnim = setInterval(() => {
+                        ;(u as any)._inkHover = true
+                        clearInterval((u as any)._inkAnim)
+                        ;(u as any)._inkAnim = setInterval(() => {
                             let done = true
                             for (const t of ts)
                                 if ((t.lvl || 0) > 0) {
                                     setF(t, (t.lvl as number) - 1)
                                     done = false
                                 }
-                            if (done) clearInterval(u._inkAnim)
+                            if (done) clearInterval((u as any)._inkAnim)
                         }, 30)
                     }
                     const leave = () => {
-                        clearInterval(u._inkAnim)
-                        u._inkHover = false
+                        clearInterval((u as any)._inkAnim)
+                        ;(u as any)._inkHover = false
                         onScroll()
                     }
                     u.addEventListener("mouseenter", enter)
@@ -336,7 +446,7 @@ export default function InkBleed(props: any) {
         /* ---- cleanup ------------------------------------------------------ */
         return () => {
             document.removeEventListener("scroll", onScroll, true)
-            window.removeEventListener("resize", onScroll)
+            window.removeEventListener("resize", onResize)
             if (raf) cancelAnimationFrame(raf)
             for (const [u, e, l] of hoverHandlers) {
                 u.removeEventListener("mouseenter", e)
@@ -344,7 +454,7 @@ export default function InkBleed(props: any) {
                 clearInterval((u as any)._inkAnim)
                 ;(u as any)._inkHover = false
             }
-            for (const t of targets) t.el.style && (t.el.style.filter = "")
+            for (const t of targets) if (t.el.style) t.el.style.filter = ""
             for (const u of units)
                 if ((u as any)._inkOrig != null) {
                     u.innerHTML = (u as any)._inkOrig
@@ -354,9 +464,12 @@ export default function InkBleed(props: any) {
     }, [
         defsHTML,
         targetNames,
-        splitLines,
+        perWord,
         hoverClears,
         area,
+        uneven,
+        blotch,
+        seed,
     ])
 
     const isEmpty = !content || (Array.isArray(content) && content.length === 0)
@@ -414,9 +527,9 @@ addPropertyControls(InkBleed, {
         title: "Content",
         control: { type: ControlType.ComponentInstance },
     },
-    splitLines: {
+    perWord: {
         type: ControlType.Boolean,
-        title: "Split lines",
+        title: "Per word",
         defaultValue: true,
     },
     area: {
@@ -434,9 +547,23 @@ addPropertyControls(InkBleed, {
         max: 100,
         defaultValue: 60,
     },
+    uneven: {
+        type: ControlType.Number,
+        title: "Unevenness",
+        min: 0,
+        max: 100,
+        defaultValue: 55,
+    },
+    blotch: {
+        type: ControlType.Number,
+        title: "Blotch scale",
+        min: 0,
+        max: 100,
+        defaultValue: 50,
+    },
     randomness: {
         type: ControlType.Number,
-        title: "Randomness",
+        title: "Edge noise",
         min: 0,
         max: 100,
         defaultValue: 45,

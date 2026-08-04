@@ -65,6 +65,16 @@
   .row .meta{ font-size:.62em; font-weight:500; letter-spacing:.02em; text-transform:none; }
   .row .yr{ text-align:right; font-weight:500; font-size:.62em; }
 
+  /* dense running text — where word-level blotching reads best */
+  .dense{
+    columns:2; column-gap:3vw;
+    font-size:clamp(15px, 1.28vw, 18px);
+    line-height:1.5;
+    max-width:1100px;
+  }
+  .dense .ink-line{ display:inline; }
+  .dense p{ margin-bottom:1.1em; break-inside:avoid-column; }
+
   section.invert{
     background:var(--ink); color:var(--paper);
     padding:6vh 4vw 8vh; margin-left:-4vw; margin-right:-4vw;
@@ -80,8 +90,8 @@
 
   footer{ font-size:12px; letter-spacing:.08em; text-transform:uppercase; opacity:.7; }
 
-  /* the lines the effect drives */
-  .ink-line{ }
+  /* per-word target created by the splitter */
+  .ink-w{ display:inline-block; }
 
   /* ---------- control panel ---------- */
   .panel{
@@ -101,7 +111,10 @@
     border-bottom:1.5px solid #111;
     font-weight:700; letter-spacing:.1em; cursor:pointer;
   }
-  .panel-body{ padding:10px 12px 12px; display:grid; gap:9px; }
+  .panel-body{
+    padding:10px 12px 12px; display:grid; gap:9px;
+    max-height:86vh; overflow:auto;
+  }
   .panel.closed .panel-body{ display:none; }
   .ctl{ display:grid; gap:3px; }
   .ctl label{ display:flex; justify-content:space-between; }
@@ -116,7 +129,7 @@
   }
   .ctl input[type=range]::-moz-range-track{ height:2px; background:#111; }
   .ctl input[type=range]::-moz-range-thumb{ width:11px; height:11px; border:0; border-radius:50%; background:#111; }
-  .toggles{ display:flex; align-items:center; gap:6px; }
+  .toggles{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
   .btnrow{ display:flex; gap:6px; flex-wrap:wrap; }
   .panel button{
     font:inherit; background:none; border:1.5px solid #111; color:#111;
@@ -129,6 +142,7 @@
     .panel{ width:200px; }
     .row{ grid-template-columns:1fr .4fr; }
     .row .meta{ display:none; }
+    .dense{ columns:1; }
   }
 </style>
 </head>
@@ -181,6 +195,16 @@
     <div class="row ink-line"><span>Papier Machine</span><span class="meta">Creative developer</span><span class="yr">2022</span></div>
   </section>
 
+  <section>
+    <h2 class="sec"><span>Running text — the blotches land word by word</span><span>¶</span></h2>
+    <div class="dense">
+      <p><span class="ink-line">The ink does not arrive in a straight line. It arrives in patches, the way a plate that has been re-inked unevenly puts too much pigment in one corner of the sheet and starves the other, so a word swells into a solid lump while its neighbour stays perfectly legible.</span></p>
+      <p><span class="ink-line">Every word is measured against a field of noise anchored to the page rather than to the screen, which means a blotch belongs to the paragraph and not to the scroll position. Scroll back up and the same words are ruined in the same places, exactly as a misprint would be.</span></p>
+      <p><span class="ink-line">Two dials govern this. Unevenness decides how far a word may run ahead of or behind the bleed line. Blotch scale decides whether the ink pools in broad continents that swallow whole sentences, or scatters into a fine speckle that picks off one word in five.</span></p>
+      <p><span class="ink-line">Turn unevenness to zero and the effect collapses back to a clean horizontal gradient. Turn it up and the page begins to read like something recovered from a failing photocopier: dense, arbitrary, and still, just barely, readable.</span></p>
+    </div>
+  </section>
+
   <section class="invert">
     <h2 class="sec"><span>Inverted — the ink inherits any text color</span><span>†</span></h2>
     <p class="bignote">
@@ -209,31 +233,40 @@
 /* =========================================================================
    INK BLEED — live-text ink degradation via an SVG filter bank
    -------------------------------------------------------------------------
-   Idea: build N filters of increasing strength (level 1..N). Each .ink-line
-   is assigned a level from its vertical position in the viewport:
-   above the "bleed line" → no filter, at the bottom edge → level N.
-   All filters shape the text's ALPHA only, so any text color survives.
+   Two independent halves:
+
+   1. WHAT the ink looks like — a bank of SVG filters, level 1..N, each a
+      stronger degradation. They shape the text's ALPHA only, so any text
+      color survives. Built once per dial change.
+
+   2. WHERE the ink lands — every word gets a level from its vertical
+      position PLUS a page-anchored noise offset, so the bleed advances as
+      irregular blotches instead of a straight horizontal front. The noise
+      is sampled in document coordinates, so a blotch belongs to the word
+      and stays put while you scroll.
    ========================================================================= */
 
 const P = {
-  area:      45,   // % of viewport height where bleed begins (0 = whole screen bleeds)
+  area:      45,   // % of viewport height where the bleed zone begins
   intensity: 60,   // max strength at the bottom edge
-  random:    45,   // turbulence frequency — low = big swells, high = jitter
+  uneven:    55,   // how far a word may run ahead of / behind the bleed line
+  blotch:    50,   // size of the ink patches: speckle ↔ continents
+  random:    45,   // edge noise frequency — low = big swells, high = jitter
   dots:      45,   // fly-away spray amount
   solidity:  90,   // 100 = hard solid ink, low = translucent watercolor
   patchy:    12,   // photocopy dropout / toner starvation
   drag:      0,    // vertical misprint smear
   hover:     true, // resolve a line on mouseover
+  perWord:   true, // split lines into words so ink varies within a line
   seed:      7,
   levels:    10,
 };
 
-const defs  = document.getElementById('filterDefs');
-const lines = Array.from(document.querySelectorAll('.ink-line'));
+const defs = document.getElementById('filterDefs');
 
-/* ---------- build one filter for normalized strength t (0..1] ----------
-   sf = size factor: filters are built per font-size bucket so the effect
-   scales with the text instead of destroying small type.               */
+/* ======================= 1. THE FILTER BANK ============================= */
+/* sf = size factor: filters are built per font-size bucket so the effect
+   scales with the text instead of destroying small type.                  */
 const BUCKETS = { S: 0.55, M: 1.0, L: 1.8 };
 
 function filterXML(bucket, k){
@@ -268,9 +301,15 @@ function filterXML(bucket, k){
   const dragScl  = ((P.drag / 100) * 55 * s * sf).toFixed(1);
   const dripBlur = ((P.drag / 100) * 9 * s * sf).toFixed(2);
 
-  let f = `<filter id="inkf-${bucket}-${k}" x="-15%" width="130%" y="-180%" height="460%" color-interpolation-filters="sRGB">`;
+  // filter region: targets can be single short words, and spray and drag both
+  // throw ink well outside the glyph box — but the region is the single
+  // biggest cost driver (every primitive runs over every pixel of it), so it
+  // grows only as far as the enabled effects actually reach
+  const mv = (55 + (P.dots / 100) * 145 + (P.drag / 100) * 190).toFixed(0);
+  const mh = (20 + (P.dots / 100) * 48).toFixed(0);
+  let f = `<filter id="inkf-${bucket}-${k}" x="-${mh}%" width="${+mh * 2 + 100}%" y="-${mv}%" height="${+mv * 2 + 100}%" color-interpolation-filters="sRGB">`;
 
-  // 1 — vertical misprint drag: streaky noise, x-channel forced flat so the
+  // a — vertical misprint drag: streaky noise, x-channel forced flat so the
   //     smear only travels up/down, plus a vertical drip blur
   let base = 'SourceGraphic';
   if (P.drag > 0){
@@ -281,13 +320,13 @@ function filterXML(bucket, k){
     base = 'dragged';
   }
 
-  // 2 — bleed: dilate + blur, wobble the domain, re-threshold later
+  // b — bleed: dilate + blur, wobble the domain, re-threshold below
   f += `<feMorphology in="${base}" operator="dilate" radius="${dil}" result="fat"/>
         <feGaussianBlur in="fat" stdDeviation="${blur}" result="blurred"/>
         <feTurbulence type="fractalNoise" baseFrequency="${wf}" numOctaves="2" seed="${sd + 1}" result="wobN"/>
         <feDisplacementMap in="blurred" in2="wobN" scale="${wob}" xChannelSelector="R" yChannelSelector="G" result="warped"/>`;
 
-  // 3 — photocopy dropout: subtract grain from the alpha before thresholding
+  // c — photocopy dropout: subtract grain from the alpha before thresholding
   let preThr = 'warped';
   if (P.patchy > 0){
     f += `<feTurbulence type="fractalNoise" baseFrequency="${grainF}" numOctaves="2" seed="${sd + 2}" result="grainN"/>
@@ -296,14 +335,14 @@ function filterXML(bucket, k){
     preThr = 'eroded';
   }
 
-  // 4 — threshold: this is what turns fuzz into INK
+  // d — threshold: this is what turns fuzz into INK
   f += `<feComponentTransfer in="${preThr}" result="ink">
           <feFuncA type="linear" slope="${slope}" intercept="${icpt}"/>
         </feComponentTransfer>`;
 
   let out = 'ink';
 
-  // 5 — fly-away spray: throw chunks of ink outward, erode them to sparse
+  // e — fly-away spray: throw chunks of ink outward, erode them to sparse
   //     clumps, then blur + re-threshold to round them into droplets
   if (dotAmt > 0.01){
     f += `<feTurbulence type="turbulence" baseFrequency="${sprayF}" numOctaves="1" seed="${sd + 3}" result="sprayN"/>
@@ -319,7 +358,7 @@ function filterXML(bucket, k){
     out = 'merged';
   }
 
-  // 6 — solidity cap: below 100 the ink goes translucent
+  // f — solidity cap: below 100 the ink goes translucent
   if (sol < 0.999){
     f += `<feComponentTransfer in="${out}">
             <feFuncA type="linear" slope="${(0.35 + 0.65 * sol).toFixed(3)}" intercept="0"/>
@@ -336,28 +375,111 @@ function buildFilters(){
   defs.innerHTML = xml;
 }
 
+/* ======================= 2. WHERE THE INK LANDS ========================= */
+
+/* --- deterministic 2D value noise, sampled in PAGE coordinates ---------- */
+function hash2(ix, iy, seed){
+  let n = Math.imul(ix | 0, 374761393) + Math.imul(iy | 0, 668265263) + Math.imul(seed | 0, 362437);
+  n = Math.imul(n ^ (n >>> 13), 1274126177);
+  return ((n ^ (n >>> 16)) >>> 0) / 4294967295;
+}
+function vnoise(x, y, seed){
+  const ix = Math.floor(x), iy = Math.floor(y);
+  const fx = x - ix, fy = y - iy;
+  const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
+  const a = hash2(ix,     iy,     seed), b = hash2(ix + 1, iy,     seed);
+  const c = hash2(ix,     iy + 1, seed), d = hash2(ix + 1, iy + 1, seed);
+  return (a + (b - a) * ux) * (1 - uy) + (c + (d - c) * ux) * uy;
+}
+function fbm(x, y, seed){
+  return 0.64 * vnoise(x, y, seed) + 0.36 * vnoise(x * 2.4 + 11, y * 2.4 - 7, seed + 91);
+}
+const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
+function smoothstep(e0, e1, v){
+  const t = clamp01((v - e0) / (e1 - e0));
+  return t * t * (3 - 2 * t);
+}
+
+/* --- split a line into per-word targets --------------------------------- */
+function splitWords(el){
+  if (el._orig == null) el._orig = el.innerHTML;
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()){
+    const n = walker.currentNode;
+    if (n.nodeValue && n.nodeValue.trim()) nodes.push(n);
+  }
+  for (const node of nodes){
+    const frag = document.createDocumentFragment();
+    for (const piece of node.nodeValue.split(/(\s+)/)){
+      if (!piece) continue;
+      if (/^\s+$/.test(piece)) frag.appendChild(document.createTextNode(piece));
+      else {
+        const s = document.createElement('span');
+        s.className = 'ink-w';
+        s.textContent = piece;
+        frag.appendChild(s);
+      }
+    }
+    node.parentNode.replaceChild(frag, node);
+  }
+  return Array.from(el.querySelectorAll('.ink-w'));
+}
+
+const units = Array.from(document.querySelectorAll('.ink-line'));
+let targets = [];
+
 function bucketOf(el){
   const px = parseFloat(getComputedStyle(el).fontSize) || 16;
   return px < 26 ? 'S' : px <= 60 ? 'M' : 'L';
 }
-function tagBuckets(){ for (const el of lines) el._bucket = bucketOf(el); }
 
-/* ---------- assign a level to every line from its viewport position ---- */
-function assignLevels(){
-  const vh = window.innerHeight;
-  const startY = vh * (P.area / 100);
-  const span = Math.max(1, vh - startY);
-
-  for (const el of lines){
-    if (el._hoverLock) continue;
-    const r = el.getBoundingClientRect();
-    if (r.bottom < -100 || r.top > vh + 300){ el.style.filter = 'none'; continue; }
-    const y = (r.top + r.bottom) / 2;
-    let n = (y - startY) / span;
-    n = Math.min(1, Math.max(0, n));
-    n = Math.pow(n, 1.3);              // ease in: subtle mid-screen, heavy at the edge
-    setLevel(el, Math.round(n * P.levels));
+function buildTargets(){
+  for (const u of units){
+    if (u._orig != null){ u.innerHTML = u._orig; u._orig = null; }
+    u.style.filter = 'none';
+    u._lvl = -1;
   }
+  targets = [];
+  for (const u of units){
+    let els = [u];
+    if (P.perWord){
+      const w = splitWords(u);
+      if (w.length > 1) els = w;
+      else { u.innerHTML = u._orig; u._orig = null; }   // single word: no gain
+    }
+    u._targets = els;
+    for (const el of els){
+      el._bucket = bucketOf(el);
+      el._unit = u;
+      el._lvl = -1;
+      targets.push(el);
+    }
+  }
+  measure();
+}
+
+/* --- cache page coordinates: scrolling never re-reads layout ------------- */
+function measure(){
+  const sy = window.scrollY, sx = window.scrollX;
+  for (const el of targets){
+    const r = el.getBoundingClientRect();
+    el._pyTop = r.top + sy;
+    el._pyBot = r.bottom + sy;
+    el._pcx   = r.left + r.width / 2 + sx;
+    el._pcy   = r.top + r.height / 2 + sy;
+  }
+}
+
+/* --- the per-word offset that breaks up the front ----------------------- */
+function unevenOffset(el){
+  const u = P.uneven / 100;
+  if (u <= 0) return 0;
+  // blotch scale: 45px speckle → 700px continents
+  const cell = 45 + (P.blotch / 100) * 655;
+  const n = fbm(el._pcx / (cell * 1.35), el._pcy / cell, P.seed);          // 0..1 coherent
+  const j = hash2(Math.round(el._pcx * 0.37), Math.round(el._pcy * 0.41), P.seed + 555);
+  return u * ((0.72 * n + 0.28 * j) - 0.5) * 2.3;
 }
 
 function setLevel(el, lvl){
@@ -366,28 +488,50 @@ function setLevel(el, lvl){
   el.style.filter = lvl > 0 ? `url(#inkf-${el._bucket}-${lvl})` : 'none';
 }
 
+function assignLevels(){
+  const vh = window.innerHeight, sy = window.scrollY;
+  const startY = vh * (P.area / 100);
+  const span = Math.max(1, vh - startY);
+
+  for (const el of targets){
+    if (el._unit._hoverLock) continue;
+    const top = el._pyTop - sy, bot = el._pyBot - sy;
+    if (bot < -140 || top > vh + 340){ setLevel(el, 0); continue; }
+
+    const raw = ((top + bot) / 2 - startY) / span;        // <0 above the zone
+    const base = Math.pow(clamp01(raw), 1.3);             // ease in
+
+    // gate: keep the top of the screen clean, and taper the randomness at the
+    // very bottom so everything still drowns at the edge
+    const gate = smoothstep(-0.55, 0.15, raw) * (1 - 0.35 * clamp01(raw));
+
+    setLevel(el, Math.round(clamp01(base + unevenOffset(el) * gate) * P.levels));
+  }
+}
+
 let raf = null;
 function requestAssign(){
   if (raf) return;
   raf = requestAnimationFrame(() => { raf = null; assignLevels(); });
 }
 addEventListener('scroll', requestAssign, { passive:true });
-addEventListener('resize', () => { tagBuckets(); requestAssign(); });
+addEventListener('resize', () => { measure(); requestAssign(); });
 
-/* ---------- hover: pull a line back together, step by step -------------- */
-for (const el of lines){
-  el.addEventListener('mouseenter', () => {
+/* ---------- hover: pull a whole line back together, step by step -------- */
+for (const u of units){
+  u.addEventListener('mouseenter', () => {
     if (!P.hover) return;
-    el._hoverLock = true;
-    clearInterval(el._anim);
-    el._anim = setInterval(() => {
-      if ((el._lvl || 0) <= 0){ clearInterval(el._anim); return; }
-      setLevel(el, el._lvl - 1);
+    u._hoverLock = true;
+    clearInterval(u._anim);
+    u._anim = setInterval(() => {
+      let done = true;
+      for (const el of u._targets) if ((el._lvl || 0) > 0){ setLevel(el, el._lvl - 1); done = false; }
+      if (done) clearInterval(u._anim);
     }, 30);
   });
-  el.addEventListener('mouseleave', () => {
-    clearInterval(el._anim);
-    el._hoverLock = false;
+  u.addEventListener('mouseleave', () => {
+    clearInterval(u._anim);
+    u._hoverLock = false;
     requestAssign();
   });
 }
@@ -396,7 +540,9 @@ for (const el of lines){
 const SLIDERS = [
   ['area',      'Bleed starts at', '% of screen'],
   ['intensity', 'Intensity',       'max strength'],
-  ['random',    'Randomness',      'blob scale'],
+  ['uneven',    'Unevenness',      'blotchy ↔ flat'],
+  ['blotch',    'Blotch scale',    'speckle ↔ swells'],
+  ['random',    'Edge noise',      'ragged edges'],
   ['dots',      'Fly-away spray',  'ink dots'],
   ['solidity',  'Ink solidity',    'solid ↔ wash'],
   ['patchy',    'Photocopy patch', 'toner dropout'],
@@ -404,15 +550,21 @@ const SLIDERS = [
 ];
 
 const PRESETS = {
-  'Bleed':  { intensity:60, random:45, dots:45, solidity:90, patchy:12, drag:0  },
-  'Xerox':  { intensity:55, random:70, dots:25, solidity:80, patchy:65, drag:10 },
-  'Smear':  { intensity:70, random:40, dots:15, solidity:88, patchy:8,  drag:80 },
-  'Spray':  { intensity:65, random:55, dots:95, solidity:75, patchy:20, drag:0  },
+  'Bleed':  { intensity:60, uneven:55, blotch:50, random:45, dots:45, solidity:90, patchy:12, drag:0  },
+  'Blotch': { intensity:80, uneven:88, blotch:64, random:38, dots:18, solidity:96, patchy:5,  drag:14 },
+  'Xerox':  { intensity:55, uneven:62, blotch:30, random:70, dots:25, solidity:80, patchy:65, drag:10 },
+  'Smear':  { intensity:70, uneven:45, blotch:58, random:40, dots:15, solidity:88, patchy:8,  drag:80 },
+  'Spray':  { intensity:65, uneven:60, blotch:42, random:55, dots:95, solidity:75, patchy:20, drag:0  },
+  'Flat':   { intensity:60, uneven:0,  blotch:50, random:45, dots:45, solidity:90, patchy:12, drag:0  },
 };
 
 const body = document.getElementById('panelBody');
 
-function rebuild(){ buildFilters(); for (const el of lines) el._lvl = -1; assignLevels(); }
+function rebuild(){
+  buildFilters();
+  for (const el of targets) el._lvl = -1;
+  assignLevels();
+}
 
 for (const [key, name, hint] of SLIDERS){
   const wrap = document.createElement('div');
@@ -430,12 +582,19 @@ for (const [key, name, hint] of SLIDERS){
 const toggles = document.createElement('div');
 toggles.className = 'toggles';
 toggles.innerHTML = `<button id="hoverBtn" class="${P.hover ? 'on' : ''}">Hover clears</button>
+                     <button id="wordBtn" class="${P.perWord ? 'on' : ''}">Per word</button>
                      <button id="seedBtn">Reseed</button>`;
 body.appendChild(toggles);
 
 document.getElementById('hoverBtn').addEventListener('click', e => {
   P.hover = !P.hover;
   e.target.classList.toggle('on', P.hover);
+});
+document.getElementById('wordBtn').addEventListener('click', e => {
+  P.perWord = !P.perWord;
+  e.target.classList.toggle('on', P.perWord);
+  buildTargets();
+  assignLevels();
 });
 document.getElementById('seedBtn').addEventListener('click', () => {
   P.seed = 1 + Math.floor(Math.random() * 500);
@@ -464,9 +623,11 @@ document.getElementById('panelHead').addEventListener('click', () => {
 });
 
 /* ---------- go ----------------------------------------------------------- */
-tagBuckets();
 buildFilters();
+buildTargets();
 assignLevels();
+if (document.fonts && document.fonts.ready)
+  document.fonts.ready.then(() => { measure(); requestAssign(); });
 </script>
 </body>
 </html>

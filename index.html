@@ -45,8 +45,9 @@
     text-wrap:balance;
   }
 
-  /* per-word target created by the splitter */
+  /* targets created by the splitter — the group keeps a split word whole */
   .ink-w{ display:inline-block; }
+  .ink-g{ display:inline-block; white-space:nowrap; }
 
   /* ---------- control panel ---------- */
   .panel{
@@ -135,19 +136,21 @@
    ========================================================================= */
 
 const P = {
-  area:      60,   // % of viewport height where the bleed zone begins
+  area:      30,   // % of viewport height where the bleed zone begins
   intensity: 60,   // max strength at the bottom edge
-  uneven:    55,   // how far a word may run ahead of / behind the bleed line
-  blotch:    50,   // size of the ink patches: speckle ↔ continents
+  gravity:   75,   // how much the blob field rules: 0 = flat horizontal front
+  size:      40,   // radius of one gravity point
+  falloff:   32,   // 0 = soft haze, 100 = tight core with a fast edge
+  density:   62,   // how many of the grid's points actually carry ink
   random:    45,   // edge noise frequency — low = big swells, high = jitter
   dots:      45,   // fly-away spray amount
   solidity:  90,   // 100 = hard solid ink, low = translucent watercolor
   patchy:    12,   // photocopy dropout / toner starvation
   drag:      0,    // vertical misprint smear
   hover:     true, // resolve a line on mouseover
-  perWord:   true, // split lines into words so ink varies within a line
+  unit:      'letter',  // 'line' | 'word' | 'letter' — granularity of the falloff
   seed:      7,
-  levels:    10,
+  levels:    14,
 };
 
 const defs = document.getElementById('filterDefs');
@@ -265,31 +268,18 @@ function buildFilters(){
 
 /* ======================= 2. WHERE THE INK LANDS ========================= */
 
-/* --- deterministic 2D value noise, sampled in PAGE coordinates ---------- */
+/* --- deterministic per-cell hash, sampled in PAGE coordinates ----------- */
 function hash2(ix, iy, seed){
   let n = Math.imul(ix | 0, 374761393) + Math.imul(iy | 0, 668265263) + Math.imul(seed | 0, 362437);
   n = Math.imul(n ^ (n >>> 13), 1274126177);
   return ((n ^ (n >>> 16)) >>> 0) / 4294967295;
 }
-function vnoise(x, y, seed){
-  const ix = Math.floor(x), iy = Math.floor(y);
-  const fx = x - ix, fy = y - iy;
-  const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
-  const a = hash2(ix,     iy,     seed), b = hash2(ix + 1, iy,     seed);
-  const c = hash2(ix,     iy + 1, seed), d = hash2(ix + 1, iy + 1, seed);
-  return (a + (b - a) * ux) * (1 - uy) + (c + (d - c) * ux) * uy;
-}
-function fbm(x, y, seed){
-  return 0.64 * vnoise(x, y, seed) + 0.36 * vnoise(x * 2.4 + 11, y * 2.4 - 7, seed + 91);
-}
 const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
-function smoothstep(e0, e1, v){
-  const t = clamp01((v - e0) / (e1 - e0));
-  return t * t * (3 - 2 * t);
-}
 
-/* --- split a line into per-word targets --------------------------------- */
-function splitWords(el){
+/* --- split a line into per-word or per-letter targets -------------------- */
+/* Letters are wrapped in a nowrap word group so the browser still only
+   breaks lines at spaces, not between two inline-block glyphs.            */
+function splitUnits(el, mode){
   if (el._orig == null) el._orig = el.innerHTML;
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
   const nodes = [];
@@ -301,12 +291,23 @@ function splitWords(el){
     const frag = document.createDocumentFragment();
     for (const piece of node.nodeValue.split(/(\s+)/)){
       if (!piece) continue;
-      if (/^\s+$/.test(piece)) frag.appendChild(document.createTextNode(piece));
-      else {
+      if (/^\s+$/.test(piece)){ frag.appendChild(document.createTextNode(piece)); continue; }
+
+      if (mode === 'word'){
         const s = document.createElement('span');
         s.className = 'ink-w';
         s.textContent = piece;
         frag.appendChild(s);
+      } else {
+        const g = document.createElement('span');
+        g.className = 'ink-g';
+        for (const ch of Array.from(piece)){
+          const s = document.createElement('span');
+          s.className = 'ink-w';
+          s.textContent = ch;
+          g.appendChild(s);
+        }
+        frag.appendChild(g);
       }
     }
     node.parentNode.replaceChild(frag, node);
@@ -331,10 +332,10 @@ function buildTargets(){
   targets = [];
   for (const u of units){
     let els = [u];
-    if (P.perWord){
-      const w = splitWords(u);
+    if (P.unit !== 'line'){
+      const w = splitUnits(u, P.unit);
       if (w.length > 1) els = w;
-      else { u.innerHTML = u._orig; u._orig = null; }   // single word: no gain
+      else { u.innerHTML = u._orig; u._orig = null; }   // single glyph: no gain
     }
     u._targets = els;
     for (const el of els){
@@ -359,15 +360,50 @@ function measure(){
   }
 }
 
-/* --- the per-word offset that breaks up the front ----------------------- */
-function unevenOffset(el){
-  const u = P.uneven / 100;
-  if (u <= 0) return 0;
-  // blotch scale: 45px speckle → 700px continents
-  const cell = 45 + (P.blotch / 100) * 655;
-  const n = fbm(el._pcx / (cell * 1.35), el._pcy / cell, P.seed);          // 0..1 coherent
-  const j = hash2(Math.round(el._pcx * 0.37), Math.round(el._pcy * 0.41), P.seed + 555);
-  return u * ((0.72 * n + 0.28 * j) - 0.5) * 2.3;
+/* --- the gravity-point field -------------------------------------------- */
+/* The ink does not advance as a front — it pools around discrete centres.
+   Each centre sits in its own jittered grid cell, so the points are seeded,
+   repeatable, and never clump into one corner. A point's contribution is 1
+   at the core and falls off radially to 0 at its reach; overlapping points
+   merge softly (1 − Π(1 − cᵢ)) instead of stamping over one another, so two
+   neighbours pool into one larger blot the way wet ink actually would.
+
+   Points are wider than they are tall — text runs horizontally, and a round
+   blot on a 1.2-line-tall word reads as a stripe rather than a pool.        */
+
+const ASPECT = 1.8;                        // horizontal stretch of a point
+
+function blobDensity(x, y){
+  const R    = 34 + Math.pow(P.size / 100, 1.7) * 560;   // reach in px
+  const gap  = R * 1.05;                                 // grid pitch
+  const exp  = 0.55 + Math.pow(P.falloff / 100, 1.3) * 4.2;
+  const keep = P.density / 100;
+  const gapX = gap * ASPECT;
+
+  const gx = Math.floor(x / gapX), gy = Math.floor(y / gap);
+  let miss = 1;
+
+  for (let oy = -1; oy <= 1; oy++){
+    for (let ox = -1; ox <= 1; ox++){
+      const cx = gx + ox, cy = gy + oy;
+      const h1 = hash2(cx, cy, P.seed);
+      if (h1 > keep) continue;                    // this cell carries no ink
+      const h2 = hash2(cx, cy, P.seed + 17);
+      const h3 = hash2(cx, cy, P.seed + 43);
+      const h4 = hash2(cx, cy, P.seed + 71);
+
+      const px = (cx + 0.12 + 0.76 * h2) * gapX;  // centre, jittered in-cell
+      const py = (cy + 0.12 + 0.76 * h3) * gap;
+      const r  = R * (0.6 + 0.8 * h4);            // every point a different size
+      const w  = 0.66 + 0.34 * h2;                // and a different weight
+
+      const dx = (x - px) / (r * ASPECT), dy = (y - py) / r;
+      const d2 = dx * dx + dy * dy;
+      if (d2 >= 1) continue;
+      miss *= 1 - w * Math.pow(1 - d2, exp);
+    }
+  }
+  return 1 - miss;
 }
 
 function setLevel(el, lvl){
@@ -387,13 +423,22 @@ function assignLevels(){
     if (bot < -140 || top > vh + 340){ setLevel(el, 0); continue; }
 
     const raw = ((top + bot) / 2 - startY) / span;        // <0 above the zone
-    const base = Math.pow(clamp01(raw), 1.3);             // ease in
 
-    // gate: keep the top of the screen clean, and taper the randomness at the
-    // very bottom so everything still drowns at the edge
-    const gate = smoothstep(-0.55, 0.15, raw) * (1 - 0.35 * clamp01(raw));
+    // The field is a static map of the page; the vertical sweep lowers a water
+    // line across it. Cores surface first and each blot then grows outward
+    // from its own centre, so a word's neighbours shade off gradually instead
+    // of switching on together.
+    //
+    // Gravity also decides how much authority the sweep keeps: at 0 the map is
+    // flat and this is a plain horizontal front, at 100 the water line is
+    // nearly level and placement belongs to the points alone. It never goes
+    // fully level — the residue is what still resolves text as it scrolls up,
+    // and what drowns everything below the fold.
+    const g = P.gravity / 100;
+    const d = g * blobDensity(el._pcx, el._pcy) + (1 - g) * 0.55;
+    const water = 0.62 - 0.98 * (1 - 0.62 * g) * Math.min(raw, 2.2);
 
-    setLevel(el, Math.round(clamp01(base + unevenOffset(el) * gate) * P.levels));
+    setLevel(el, Math.round(clamp01((d - water) / 0.5) * P.levels));
   }
 }
 
@@ -428,8 +473,10 @@ for (const u of units){
 const SLIDERS = [
   ['area',      'Bleed starts at', '% of screen'],
   ['intensity', 'Intensity',       'max strength'],
-  ['uneven',    'Unevenness',      'blotchy ↔ flat'],
-  ['blotch',    'Blotch scale',    'speckle ↔ swells'],
+  ['gravity',   'Gravity',         'flat ↔ pooled'],
+  ['size',      'Point reach',     'tight ↔ broad'],
+  ['falloff',   'Falloff',         'haze ↔ hard core'],
+  ['density',   'Point count',     'sparse ↔ crowded'],
   ['random',    'Edge noise',      'ragged edges'],
   ['dots',      'Fly-away spray',  'ink dots'],
   ['solidity',  'Ink solidity',    'solid ↔ wash'],
@@ -438,12 +485,12 @@ const SLIDERS = [
 ];
 
 const PRESETS = {
-  'Bleed':  { intensity:60, uneven:55, blotch:50, random:45, dots:45, solidity:90, patchy:12, drag:0  },
-  'Blotch': { intensity:80, uneven:88, blotch:64, random:38, dots:18, solidity:96, patchy:5,  drag:14 },
-  'Xerox':  { intensity:55, uneven:62, blotch:30, random:70, dots:25, solidity:80, patchy:65, drag:10 },
-  'Smear':  { intensity:70, uneven:45, blotch:58, random:40, dots:15, solidity:88, patchy:8,  drag:80 },
-  'Spray':  { intensity:65, uneven:60, blotch:42, random:55, dots:95, solidity:75, patchy:20, drag:0  },
-  'Flat':   { intensity:60, uneven:0,  blotch:50, random:45, dots:45, solidity:90, patchy:12, drag:0  },
+  'Pools':  { intensity:60, gravity:75, size:46, falloff:45, density:62, random:45, dots:45, solidity:90, patchy:12, drag:0  },
+  'Tight':  { intensity:78, gravity:92, size:24, falloff:78, density:48, random:38, dots:18, solidity:96, patchy:5,  drag:0  },
+  'Broad':  { intensity:70, gravity:88, size:78, falloff:26, density:38, random:42, dots:30, solidity:92, patchy:8,  drag:0  },
+  'Xerox':  { intensity:55, gravity:70, size:38, falloff:60, density:70, random:70, dots:25, solidity:80, patchy:65, drag:10 },
+  'Smear':  { intensity:70, gravity:66, size:52, falloff:35, density:58, random:40, dots:15, solidity:88, patchy:8,  drag:80 },
+  'Flat':   { intensity:60, gravity:0,  size:46, falloff:45, density:62, random:45, dots:45, solidity:90, patchy:12, drag:0  },
 };
 
 const body = document.getElementById('panelBody');
@@ -454,6 +501,9 @@ function rebuild(){
   assignLevels();
 }
 
+/* dials that only move ink around don't need the filter bank rebuilt */
+const PLACEMENT_ONLY = new Set(['area', 'gravity', 'size', 'falloff', 'density']);
+
 for (const [key, name, hint] of SLIDERS){
   const wrap = document.createElement('div');
   wrap.className = 'ctl';
@@ -463,14 +513,16 @@ for (const [key, name, hint] of SLIDERS){
   wrap.querySelector('input').addEventListener('input', e => {
     P[key] = +e.target.value;
     document.getElementById('v-' + key).textContent = P[key];
-    rebuild();
+    if (PLACEMENT_ONLY.has(key)) assignLevels();
+    else rebuild();
   });
 }
 
 const toggles = document.createElement('div');
 toggles.className = 'toggles';
+const UNITS = ['line', 'word', 'letter'];
 toggles.innerHTML = `<button id="hoverBtn" class="${P.hover ? 'on' : ''}">Hover clears</button>
-                     <button id="wordBtn" class="${P.perWord ? 'on' : ''}">Per word</button>
+                     <button id="unitBtn" class="on">Per ${P.unit}</button>
                      <button id="seedBtn">Reseed</button>`;
 body.appendChild(toggles);
 
@@ -478,9 +530,9 @@ document.getElementById('hoverBtn').addEventListener('click', e => {
   P.hover = !P.hover;
   e.target.classList.toggle('on', P.hover);
 });
-document.getElementById('wordBtn').addEventListener('click', e => {
-  P.perWord = !P.perWord;
-  e.target.classList.toggle('on', P.perWord);
+document.getElementById('unitBtn').addEventListener('click', e => {
+  P.unit = UNITS[(UNITS.indexOf(P.unit) + 1) % UNITS.length];
+  e.target.textContent = 'Per ' + P.unit;
   buildTargets();
   assignLevels();
 });

@@ -1,7 +1,7 @@
 # Ink Bleed — scroll-degraded text
 
-A live-text "ink bleed" effect: text near the bottom of the viewport dissolves
-into fat, distressed ink (bleed / photocopy / smear / spray), and pulls itself
+A live-text "ink bleed" effect: text dissolves into fat, distressed ink
+(bleed / photocopy / smear / spray) around discrete pools, and pulls itself
 back together as you scroll it upward. Inspired by distressed print, RAY GUN
 scans, and RM's INDIGO brand guidelines.
 
@@ -28,22 +28,33 @@ filters. There are two independent halves:
 
 **Where the ink lands**
 
-4. **Per-word targets** — each `.ink-line` is split into one span per word, so
-   the ink can vary *within* a line instead of hitting it all at once.
-5. **Blotchy front** — a word's level is its vertical position *plus* an
-   offset sampled from 2D value noise. The noise is sampled in **document**
-   coordinates, not viewport ones, so a blotch belongs to the word and stays
-   put while you scroll — the same words are ruined in the same places every
-   time, the way a real misprint would be. Set Unevenness to 0 and it
-   collapses back to a clean horizontal gradient.
-6. **Gate** — the offset is faded in above the bleed line and tapered at the
-   bottom edge, so the top of the screen stays clean and everything still
-   drowns at the very bottom.
+4. **Gravity points** — ink pools around discrete centres, not along a front.
+   Each centre sits in its own jittered grid cell (seeded, so it is
+   repeatable and never clumps into a corner) and carries its own radius and
+   weight. A point is solid at the core and falls off radially to nothing at
+   its reach; overlapping points merge softly — `1 − Π(1 − cᵢ)` — so two
+   neighbours pool into one larger blot instead of stamping over each other.
+   Points are 1.8× wider than tall, because a round blot on a line-tall word
+   reads as a stripe rather than a pool.
+5. **Granularity** — each `.ink-line` is split per word or **per letter**, so
+   a point's falloff resolves *inside* a word: the core glyphs drown while
+   the ones at the edge of the blot are only half-eaten. Split letters are
+   wrapped in a nowrap group, so lines still break at spaces only.
+6. **The water line** — the field is a static map of the page; the vertical
+   sweep lowers a water line across it. Cores surface first and each blot
+   then grows outward from its centre, the way ink actually spreads.
+   **Gravity** also sets how much authority the sweep keeps: 0 is a plain
+   horizontal front, 100 leaves the water line nearly level and hands
+   placement to the points. It never goes fully level — that residue is what
+   resolves text as it scrolls up, and what drowns everything below the fold.
 
-Page coordinates are measured once and cached, so scrolling never re-reads
-layout. Splitting per word is also *faster* than filtering whole lines: a
-filter region is proportional to its element's bounding box, and a full-width
-row wastes an enormous region on the empty gaps between columns.
+The field is sampled in **document** coordinates, so a blot belongs to the
+words and stays put while you scroll: the same letters are ruined in the same
+places every time, the way a real misprint would be. Page coordinates are
+measured once and cached, so scrolling never re-reads layout. Splitting is
+also *faster* than filtering whole lines: a filter region is proportional to
+its element's bounding box, and a full-width row wastes an enormous region on
+the empty gaps between columns.
 
 ## Dials
 
@@ -51,19 +62,21 @@ row wastes an enormous region on the empty gaps between columns.
 |---|---|
 | Bleed starts at | % of viewport height where degradation begins |
 | Intensity | max strength at the bottom edge |
-| **Unevenness** | how far a word may run ahead of / behind the bleed line — 0 = uniform |
-| **Blotch scale** | fine speckle ↔ broad continents that swallow whole sentences |
+| **Gravity** | flat horizontal front (0) ↔ placement ruled by the points (100) |
+| **Point reach** | radius of one pool: tight ↔ broad |
+| **Falloff** | soft haze (0) ↔ tight core with a fast edge (100) |
+| **Point count** | how many grid cells actually carry ink: sparse ↔ crowded |
 | Edge noise | raggedness of the ink edges |
 | Fly-away spray | amount of ink droplets thrown off edges |
 | Ink solidity | hard solid ink ↔ translucent wash |
 | Photocopy patch | toner-starvation dropout |
 | Misprint drag | vertical smear/drip |
-| Per word | split lines into words (off = whole line degrades together) |
+| Per line / word / letter | granularity of the falloff — letter shades off *inside* a word |
 | Hover clears | mousing over a line resolves it step by step |
-| Reseed | new random ink pattern *and* new blotch layout |
+| Reseed | new random ink pattern *and* new point layout |
 
-Presets: **Bleed / Blotch / Xerox / Smear / Spray / Flat** (Flat = unevenness
-off, for comparison).
+Presets: **Pools / Tight / Broad / Xerox / Smear / Flat** (Flat = gravity off,
+for comparison).
 
 ## Framer
 
@@ -78,9 +91,10 @@ off, for comparison).
    with a matching name gets the effect — or connect layers to **Content**
    instead.
 4. All dials appear as native controls in the right sidebar — including
-   **Unevenness** and **Blotch scale**, which govern how randomly the ink
-   lands. **Per word** splits text into words so the blotches vary within a
-   line; turn it off to degrade whole layers at once.
+   **Gravity**, **Point reach**, **Falloff** and **Point count**, which
+   govern where the ink pools. **Granularity** (Line / Word / Letter) sets
+   how finely a pool's falloff resolves; Letter shades off inside a word,
+   Line degrades a whole layer at once.
 
 The canvas shows a static preview mapped across the component's own frame;
 the real scroll behavior runs in **Preview** and on the published site.

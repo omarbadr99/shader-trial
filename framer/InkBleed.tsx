@@ -9,13 +9,16 @@ import { addPropertyControls, ControlType, RenderTarget } from "framer"
  * scrolls up. Pure SVG filters on the text's alpha channel — text stays
  * real and selectable, and any text color is inherited automatically.
  *
- * The bleed does not advance as a straight horizontal front. Every word is
- * offset by a field of noise anchored to the PAGE, so the ink arrives in
- * irregular blotches — one word drowns while its neighbour stays crisp —
- * and a blotch stays glued to its word as you scroll. "Unevenness" sets how
- * far a word may run ahead of or behind the bleed line; "Blotch scale" sets
- * whether the ink pools in broad continents or scatters as fine speckle.
- * Unevenness at 0 collapses back to a clean uniform gradient.
+ * The bleed does not advance as a straight horizontal front. Ink pools
+ * around discrete GRAVITY POINTS anchored to the PAGE: each point is solid
+ * at its core and falls off radially to nothing at its reach, so a blot
+ * fades through its neighbours instead of switching them on together, and
+ * it stays glued to the same words as you scroll. Set "Granularity" to
+ * Letter and the falloff resolves inside a single word.
+ *
+ * "Gravity" is the master dial — 0 is a plain horizontal front, 100 hands
+ * placement entirely to the points. "Point reach", "Falloff" and "Point
+ * count" shape the individual pools.
  *
  * Two ways to use it:
  *  1. "Target names": type the names of text layers on your page
@@ -31,7 +34,7 @@ import { addPropertyControls, ControlType, RenderTarget } from "framer"
  * @framerIntrinsicHeight 48
  */
 
-const LEVELS = 10
+const LEVELS = 14
 const BUCKETS: Record<string, number> = { S: 0.55, M: 1.0, L: 1.8 }
 
 interface Dials {
@@ -143,7 +146,7 @@ function buildFilters(uid: string, P: Dials): string {
     return xml
 }
 
-/* ---- deterministic 2D value noise, sampled in PAGE coordinates --------- */
+/* ---- deterministic per-cell hash, sampled in PAGE coordinates ---------- */
 function hash2(ix: number, iy: number, seed: number): number {
     let n =
         Math.imul(ix | 0, 374761393) +
@@ -152,33 +155,67 @@ function hash2(ix: number, iy: number, seed: number): number {
     n = Math.imul(n ^ (n >>> 13), 1274126177)
     return ((n ^ (n >>> 16)) >>> 0) / 4294967295
 }
-function vnoise(x: number, y: number, seed: number): number {
-    const ix = Math.floor(x),
-        iy = Math.floor(y)
-    const fx = x - ix,
-        fy = y - iy
-    const ux = fx * fx * (3 - 2 * fx),
-        uy = fy * fy * (3 - 2 * fy)
-    const a = hash2(ix, iy, seed),
-        b = hash2(ix + 1, iy, seed)
-    const c = hash2(ix, iy + 1, seed),
-        d = hash2(ix + 1, iy + 1, seed)
-    return (a + (b - a) * ux) * (1 - uy) + (c + (d - c) * ux) * uy
-}
-function fbm(x: number, y: number, seed: number): number {
-    return (
-        0.64 * vnoise(x, y, seed) +
-        0.36 * vnoise(x * 2.4 + 11, y * 2.4 - 7, seed + 91)
-    )
-}
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v)
-function smoothstep(e0: number, e1: number, v: number) {
-    const t = clamp01((v - e0) / (e1 - e0))
-    return t * t * (3 - 2 * t)
+
+/* ---- the gravity-point field -------------------------------------------
+   Ink pools around discrete centres rather than advancing as a front. Each
+   centre sits in its own jittered grid cell, so the points are seeded,
+   repeatable and never clump into one corner; each carries its own radius
+   and weight. A point is 1 at the core and falls off radially to 0 at its
+   reach, and overlapping points merge softly (1 − Π(1 − cᵢ)) instead of
+   stamping over one another, so two neighbours pool into one larger blot
+   the way wet ink would.
+
+   Points are wider than they are tall — text runs horizontally, and a round
+   blot on a line-tall word reads as a stripe rather than a pool.          */
+const ASPECT = 1.8
+
+function blobDensity(
+    x: number,
+    y: number,
+    size: number,
+    falloff: number,
+    density: number,
+    seed: number
+): number {
+    const R = 34 + Math.pow(size / 100, 1.7) * 560 // reach in px
+    const gap = R * 1.05 // grid pitch
+    const exp = 0.55 + Math.pow(falloff / 100, 1.3) * 4.2
+    const keep = density / 100
+    const gapX = gap * ASPECT
+
+    const gx = Math.floor(x / gapX),
+        gy = Math.floor(y / gap)
+    let miss = 1
+
+    for (let oy = -1; oy <= 1; oy++) {
+        for (let ox = -1; ox <= 1; ox++) {
+            const cx = gx + ox,
+                cy = gy + oy
+            if (hash2(cx, cy, seed) > keep) continue // cell carries no ink
+            const h2 = hash2(cx, cy, seed + 17)
+            const h3 = hash2(cx, cy, seed + 43)
+            const h4 = hash2(cx, cy, seed + 71)
+
+            const px = (cx + 0.12 + 0.76 * h2) * gapX // jittered in-cell
+            const py = (cy + 0.12 + 0.76 * h3) * gap
+            const r = R * (0.6 + 0.8 * h4) // every point a different size
+            const w = 0.66 + 0.34 * h2 //     and a different weight
+
+            const dx = (x - px) / (r * ASPECT),
+                dy = (y - py) / r
+            const d2 = dx * dx + dy * dy
+            if (d2 >= 1) continue
+            miss *= 1 - w * Math.pow(1 - d2, exp)
+        }
+    }
+    return 1 - miss
 }
 
-/* ---- split a text element into per-word spans -------------------------- */
-function splitToWords(el: HTMLElement): HTMLElement[] {
+/* ---- split a text element into per-word or per-letter spans ------------
+   Letters are wrapped in a nowrap group so the browser still only breaks
+   lines at spaces, never between two inline-block glyphs.                */
+function splitToUnits(el: HTMLElement, mode: string): HTMLElement[] {
     const anyEl = el as any
     if (anyEl._inkOrig == null) anyEl._inkOrig = el.innerHTML
     const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
@@ -191,14 +228,28 @@ function splitToWords(el: HTMLElement): HTMLElement[] {
         const frag = document.createDocumentFragment()
         for (const piece of (node.nodeValue || "").split(/(\s+)/)) {
             if (!piece) continue
-            if (/^\s+$/.test(piece))
+            if (/^\s+$/.test(piece)) {
                 frag.appendChild(document.createTextNode(piece))
-            else {
+                continue
+            }
+            if (mode === "word") {
                 const sp = document.createElement("span")
                 sp.setAttribute("data-ink-w", "")
                 sp.style.display = "inline-block"
                 sp.textContent = piece
                 frag.appendChild(sp)
+            } else {
+                const g = document.createElement("span")
+                g.style.display = "inline-block"
+                g.style.whiteSpace = "nowrap"
+                for (const ch of Array.from(piece)) {
+                    const sp = document.createElement("span")
+                    sp.setAttribute("data-ink-w", "")
+                    sp.style.display = "inline-block"
+                    sp.textContent = ch
+                    g.appendChild(sp)
+                }
+                frag.appendChild(g)
             }
         }
         node.parentNode?.replaceChild(frag, node)
@@ -212,11 +263,13 @@ export default function InkBleed(props: any) {
     const {
         content,
         targetNames = "",
-        perWord = true,
-        area = 45,
+        unit = "letter",
+        area = 30,
         intensity = 60,
-        uneven = 55,
-        blotch = 50,
+        gravity = 75,
+        size = 40,
+        falloff = 32,
+        density = 62,
         randomness = 45,
         spray = 45,
         solidity = 90,
@@ -289,8 +342,8 @@ export default function InkBleed(props: any) {
 
         for (const u of units) {
             let els: HTMLElement[] = [u]
-            if (perWord) {
-                const words = splitToWords(u)
+            if (unit !== "line") {
+                const words = splitToUnits(u, unit)
                 if (words.length > 1) els = words
                 else {
                     u.innerHTML = (u as any)._inkOrig
@@ -329,20 +382,6 @@ export default function InkBleed(props: any) {
             }
         }
 
-        /* ---- the per-word offset that breaks up the front --------------- */
-        const unevenOffset = (t: Target) => {
-            const u = uneven / 100
-            if (u <= 0) return 0
-            const cell = 45 + (blotch / 100) * 655 // 45px speckle → 700px continents
-            const n = fbm(t.pcx / (cell * 1.35), t.pcy / cell, seed)
-            const j = hash2(
-                Math.round(t.pcx * 0.37),
-                Math.round(t.pcy * 0.41),
-                seed + 555
-            )
-            return u * (0.72 * n + 0.28 * j - 0.5) * 2.3
-        }
-
         const setF = (t: Target, lvl: number) => {
             if (t.lvl === lvl) return
             t.lvl = lvl
@@ -373,17 +412,27 @@ export default function InkBleed(props: any) {
                     continue
                 }
                 const raw = ((top + bot) / 2 - startY) / span
-                const base = Math.pow(clamp01(raw), 1.3)
-                // gate: keep the clean end clean, and taper the randomness at
-                // the far end so everything still drowns at the edge
-                const gate =
-                    smoothstep(-0.55, 0.15, raw) * (1 - 0.35 * clamp01(raw))
-                setF(
-                    t,
-                    Math.round(
-                        clamp01(base + unevenOffset(t) * gate) * LEVELS
-                    )
-                )
+
+                // The field is a static map of the page; the sweep lowers a
+                // water line across it. Cores surface first and each blot then
+                // grows outward from its own centre, so a word's neighbours
+                // shade off gradually instead of switching on together.
+                //
+                // Gravity also decides how much authority the sweep keeps: at
+                // 0 the map is flat and this is a plain horizontal front, at
+                // 100 the water line is nearly level and placement belongs to
+                // the points alone. It never goes fully level — the residue is
+                // what resolves text as it scrolls up, and what drowns
+                // everything below the fold.
+                const g = gravity / 100
+                const d =
+                    g *
+                        blobDensity(t.pcx, t.pcy, size, falloff, density, seed) +
+                    (1 - g) * 0.55
+                const water =
+                    0.62 - 0.98 * (1 - 0.62 * g) * Math.min(raw, 2.2)
+
+                setF(t, Math.round(clamp01((d - water) / 0.5) * LEVELS))
             }
         }
 
@@ -464,11 +513,13 @@ export default function InkBleed(props: any) {
     }, [
         defsHTML,
         targetNames,
-        perWord,
+        unit,
         hoverClears,
         area,
-        uneven,
-        blotch,
+        gravity,
+        size,
+        falloff,
+        density,
         seed,
     ])
 
@@ -527,17 +578,19 @@ addPropertyControls(InkBleed, {
         title: "Content",
         control: { type: ControlType.ComponentInstance },
     },
-    perWord: {
-        type: ControlType.Boolean,
-        title: "Per word",
-        defaultValue: true,
+    unit: {
+        type: ControlType.Enum,
+        title: "Granularity",
+        options: ["line", "word", "letter"],
+        optionTitles: ["Line", "Word", "Letter"],
+        defaultValue: "letter",
     },
     area: {
         type: ControlType.Number,
         title: "Bleed starts",
         min: 0,
         max: 100,
-        defaultValue: 45,
+        defaultValue: 30,
         unit: "%",
     },
     intensity: {
@@ -547,19 +600,33 @@ addPropertyControls(InkBleed, {
         max: 100,
         defaultValue: 60,
     },
-    uneven: {
+    gravity: {
         type: ControlType.Number,
-        title: "Unevenness",
+        title: "Gravity",
         min: 0,
         max: 100,
-        defaultValue: 55,
+        defaultValue: 75,
     },
-    blotch: {
+    size: {
         type: ControlType.Number,
-        title: "Blotch scale",
+        title: "Point reach",
         min: 0,
         max: 100,
-        defaultValue: 50,
+        defaultValue: 40,
+    },
+    falloff: {
+        type: ControlType.Number,
+        title: "Falloff",
+        min: 0,
+        max: 100,
+        defaultValue: 32,
+    },
+    density: {
+        type: ControlType.Number,
+        title: "Point count",
+        min: 0,
+        max: 100,
+        defaultValue: 62,
     },
     randomness: {
         type: ControlType.Number,

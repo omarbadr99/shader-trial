@@ -87,6 +87,31 @@
   .blob-add{ width:100%; }
   .hint{ opacity:.5; line-height:1.4; }
 </style>
+
+<style id="transbar-css">
+  .transbar{
+    position:fixed; left:50%; bottom:16px; transform:translateX(-50%); z-index:60;
+    display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:center;
+    padding:8px 12px; max-width:calc(100vw - 24px);
+    background:rgba(252,251,248,.94); backdrop-filter:blur(6px);
+    border:1.5px solid #111;
+    font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:11px; color:#111;
+    user-select:none;
+  }
+  .transbar select, .transbar input[type=number]{
+    font:inherit; border:1.5px solid #111; background:none; padding:3px 5px; color:#111;
+  }
+  .transbar input[type=number]{ width:52px; }
+  .transbar .arrow{ opacity:.5; font-weight:700; }
+  .transbar .tlabel{ font-weight:700; letter-spacing:.12em; opacity:.6; }
+  .transbar label{ display:flex; align-items:center; gap:4px; cursor:pointer; }
+  .transbar button{
+    font:inherit; font-weight:700; background:none; border:1.5px solid #111;
+    padding:4px 12px; cursor:pointer;
+  }
+  .transbar button:hover{ background:#111; color:#f2efe8; }
+  .transbar .scrub{ width:120px; }
+</style>
 </head>
 <body>
 
@@ -97,6 +122,26 @@
   <small>drag to orbit · shader trial 02 v2</small>
   <small id="gpuInfo" style="opacity:.4"></small>
 </div>
+
+<div class="transbar" id="transbar">
+  <span class="tlabel">A→B</span>
+  <select id="fromSel" title="Start preset"></select>
+  <span class="arrow">→</span>
+  <select id="toSel" title="End preset"></select>
+  <select id="easeSel" title="Easing">
+    <option value="smooth">Smooth</option>
+    <option value="smoother">Smoother</option>
+    <option value="inout">Ease in-out</option>
+    <option value="in">Ease in</option>
+    <option value="out">Ease out</option>
+    <option value="linear">Linear</option>
+  </select>
+  <label><input type="number" id="durInput" value="4" min="0.3" max="60" step="0.1"> s</label>
+  <input type="range" id="scrub" class="scrub" min="0" max="1" step="0.001" value="0" title="Scrub A→B">
+  <label title="Ping-pong loop"><input type="checkbox" id="loopChk"> loop</label>
+  <button id="playBtn">▶ Play</button>
+</div>
+
 
 <div class="panel" id="panel">
   <div class="panel-head" id="panelHead"><span>INK RING</span><span id="panelToggle">—</span></div>
@@ -262,7 +307,7 @@
     <div class="sec">MOTION — rigid, never noisy</div>
 
     <div class="ctl"><label>Overall speed <b id="v-speed"></b></label>
-      <input type="range" id="speed" min="0" max="10" step="0.05"></div>
+      <input type="range" id="speed" min="0" max="20" step="0.05"></div>
 
     <div class="ctl"><label>Spin <b id="v-spin"></b></label>
       <input type="range" id="spin" min="-1" max="1" step="0.01"></div>
@@ -306,7 +351,7 @@
       <input type="range" id="taper" min="0" max="0.4" step="0.01"></div>
 
     <div class="ctl"><label>Zoom <b id="v-zoom"></b></label>
-      <input type="range" id="zoom" min="0.5" max="2" step="0.01"></div>
+      <input type="range" id="zoom" min="0.5" max="6" step="0.01"></div>
 
     <div class="sec">SHELL — frosted Y2K plastic</div>
 
@@ -1226,6 +1271,14 @@ const DIALS = ["ink","gravity","crange","fluid","fcenter","fthick","fdepth","fla
 const CHECKS = new Set(["optv1","refrfull"]);
 
 function hex2rgb(h){ return [1,3,5].map(i => parseInt(h.slice(i, i+2), 16)/255); }
+const lerp = (a, b, t) => a + (b - a) * t;
+function mixHex(a, b, t){
+  const A = hex2rgb(a), B = hex2rgb(b);
+  return "#" + [0,1,2].map(i => {
+    const v = Math.round(Math.max(0, Math.min(255, (A[i] + (B[i]-A[i])*t) * 255)));
+    return v.toString(16).padStart(2, "0");
+  }).join("");
+}
 function absorb(hex){
   return hex2rgb(hex).map(c => -Math.log(Math.min(1, Math.max(0.02, c))));
 }
@@ -1338,9 +1391,20 @@ function renderPresets(){
   for (const name in userPresets){
     const b = document.createElement("button");
     b.textContent = name + " ";
+    const u = document.createElement("span");
+    u.textContent = "\u21bb";                     // update-in-place
+    u.style.opacity = ".55"; u.style.marginLeft = "2px";
+    u.title = "Update this preset to the current settings";
+    u.addEventListener("click", ev => {
+      ev.stopPropagation();
+      userPresets[name] = snapshot();
+      persistPresets();
+      u.textContent = "\u2713";                   // brief check feedback
+      setTimeout(() => { u.textContent = "\u21bb"; }, 700);
+    });
     const x = document.createElement("span");
     x.textContent = "×";
-    x.style.opacity = ".55";
+    x.style.opacity = ".55"; x.style.marginLeft = "4px";
     x.title = "Delete preset";
     x.addEventListener("click", ev => {
       ev.stopPropagation();
@@ -1348,7 +1412,7 @@ function renderPresets(){
       persistPresets();
       renderPresets();
     });
-    b.append(x);
+    b.append(u, x);
     b.addEventListener("click", () => applyPreset(userPresets[name]));
     presetRow.append(b);
   }
@@ -1360,7 +1424,130 @@ function renderPresets(){
     if (saveRow.style.display !== "none") document.getElementById("saveName").focus();
   });
   presetRow.append(save);
+  if (typeof fillTransSelects === "function") fillTransSelects();
 }
+
+/* ============================================================
+   A -> B preset transition player
+============================================================ */
+const EASE = {
+  linear:   u => u,
+  smooth:   u => u*u*(3 - 2*u),
+  smoother: u => u*u*u*(u*(u*6 - 15) + 10),
+  inout:    u => u < 0.5 ? 2*u*u : 1 - Math.pow(-2*u + 2, 2)/2,
+  in:       u => u*u,
+  out:      u => 1 - (1-u)*(1-u),
+};
+const fromSel = document.getElementById("fromSel");
+const toSel   = document.getElementById("toSel");
+const easeSel = document.getElementById("easeSel");
+const durInput= document.getElementById("durInput");
+const loopChk = document.getElementById("loopChk");
+const playBtn = document.getElementById("playBtn");
+const scrub   = document.getElementById("scrub");
+
+function presetByName(name){ return PRESETS[name] || userPresets[name] || null; }
+function fillTransSelects(){
+  const names = [...Object.keys(PRESETS), ...Object.keys(userPresets)];
+  for (const sel of [fromSel, toSel]){
+    const cur = sel.value;
+    sel.innerHTML = names.map(n => `<option value="${n}">${n[0].toUpperCase()+n.slice(1)}</option>`).join("");
+    if (names.includes(cur)) sel.value = cur;
+  }
+  if (!names.includes(fromSel.value)) fromSel.value = names[0];
+  if (!toSel.value || toSel.value === fromSel.value)
+    toSel.value = names[1] || names[0];
+}
+
+let trans = null;   // { A, B, start, dur, ease, loop }
+
+function dialLerp(A, B, e){
+  for (const d of DIALS){
+    if (d === "optv1" || d === "refrfull") continue;
+    const a = A.dials[d] ?? PRESETS.reference.dials[d];
+    const b = B.dials[d] ?? PRESETS.reference.dials[d];
+    if (a == null || b == null) continue;
+    S[d] = lerp(a, b, e);
+  }
+  for (let i = 0; i < blobs.length; i++){
+    const a = A.blobs[i], b = B.blobs[i], w = blobs[i];
+    if (a && b){
+      w.color = mixHex(a.color, b.color, e);
+      w.size  = lerp(a.size,  b.size,  e);
+      w.speed = lerp(a.speed, b.speed, e);
+      w.amt   = lerp(a.amt,   b.amt,   e);
+      w.tail  = lerp(a.tail,  b.tail,  e);
+      w.drift = lerp(a.drift, b.drift, e);
+    } else if (b){                       // fading a blob IN
+      w.color=b.color; w.size=b.size; w.speed=b.speed; w.tail=b.tail; w.drift=b.drift;
+      w.amt = lerp(0, b.amt, e);
+    } else if (a){                       // fading a blob OUT
+      w.color=a.color; w.size=a.size; w.speed=a.speed; w.tail=a.tail; w.drift=a.drift;
+      w.amt = lerp(a.amt, 0, e);
+    }
+  }
+  syncDialUI();
+}
+function syncDialUI(){
+  for (const d of DIALS){
+    if (d === "optv1" || d === "refrfull") continue;
+    const el = document.getElementById(d); if (!el) continue;
+    el.value = S[d];
+    const lbl = document.getElementById("v-" + d);
+    if (lbl) lbl.textContent = fmt(S[d]);
+  }
+}
+/* stable working blob list sized to hold both presets, so motion state
+   (angles/phases) is preserved through the whole transition */
+function beginBlend(A, B){
+  const n = Math.max(A.blobs.length, B.blobs.length);
+  const wb = [];
+  for (let i = 0; i < n; i++)
+    wb.push(mkBlob(Object.assign({}, B.blobs[i] || A.blobs[i])));
+  blobs = wb; renderBlobs();
+}
+function startTrans(){
+  const A = presetByName(fromSel.value), B = presetByName(toSel.value);
+  if (!A || !B) return;
+  beginBlend(A, B);
+  trans = { A, B, start: performance.now(),
+            dur: Math.max(0.3, +durInput.value) * 1000,
+            ease: EASE[easeSel.value] || EASE.smooth,
+            loop: loopChk.checked };
+  playBtn.textContent = "■ Stop";
+}
+function stopTrans(){ trans = null; playBtn.textContent = "▶ Play"; }
+playBtn.addEventListener("click", () => trans ? stopTrans() : startTrans());
+
+/* manual scrub: drag to preview any point A->B (pauses playback) */
+scrub.addEventListener("input", () => {
+  const A = presetByName(fromSel.value), B = presetByName(toSel.value);
+  if (!A || !B) return;
+  if (trans) stopTrans();
+  if (blobs.length !== Math.max(A.blobs.length, B.blobs.length)) beginBlend(A, B);
+  dialLerp(A, B, (EASE[easeSel.value] || EASE.smooth)(+scrub.value));
+});
+
+function applyTransition(now){
+  if (!trans) return;
+  let u = (now - trans.start) / trans.dur;
+  if (u >= 1 && trans.loop){                 // ping-pong
+    const t = trans.A; trans.A = trans.B; trans.B = t;
+    trans.start = now; u = 0;
+    const n = Math.max(trans.A.blobs.length, trans.B.blobs.length);
+    while (blobs.length < n) blobs.push(mkBlob({}));
+    while (blobs.length > n) blobs.pop();
+    renderBlobs();
+  }
+  u = Math.min(u, 1);
+  dialLerp(trans.A, trans.B, trans.ease(u));
+  scrub.value = u;
+  if (u >= 1 && !trans.loop){
+    const B = trans.B; stopTrans(); applyPreset(B);
+  }
+}
+fillTransSelects();
+
 function doSave(){
   const name = document.getElementById("saveName").value.trim();
   if (!name) return;
@@ -1548,6 +1735,8 @@ const pressB  = new Float32Array(MAXB*4);
 function frame(now){
   const dt = Math.min((now - last)/1000, 0.05);
   last = now; frameN++;
+
+  applyTransition(now);
 
   const dts = dt * S.speed;          // master clock — one dial scales it all
   if (!paused){

@@ -157,6 +157,12 @@
       </div>
     </div>
 
+    <div class="btnrow">
+      <button id="exportPresets" title="Download all saved presets as a .json file">⇩ Export presets</button>
+      <button id="importPresets" title="Load presets from a .json file">⇧ Import</button>
+      <input type="file" id="importFile" accept="application/json,.json" style="display:none">
+    </div>
+
     <div class="sec">BLOBS — the liquid inside</div>
     <div id="blobList" style="display:grid; gap:7px;"></div>
     <button class="blob-add" id="blobAdd">+ Add blob</button>
@@ -1558,6 +1564,32 @@ function doSave(){
   renderPresets();
 }
 document.getElementById("saveOk").addEventListener("click", doSave);
+document.getElementById("exportPresets").addEventListener("click", () => {
+  const data = JSON.stringify(userPresets, null, 2);
+  const blob = new Blob([data], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "organic-o-presets.json";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+document.getElementById("importPresets").addEventListener("click", () =>
+  document.getElementById("importFile").click());
+document.getElementById("importFile").addEventListener("change", e => {
+  const file = e.target.files[0]; if (!file) return;
+  const r = new FileReader();
+  r.onload = () => {
+    try {
+      const obj = JSON.parse(r.result);
+      if (obj && typeof obj === "object"){
+        Object.assign(userPresets, obj);   // merge (keeps existing)
+        persistPresets(); renderPresets();
+      }
+    } catch(err){ alert("Could not read that preset file."); }
+    e.target.value = "";
+  };
+  r.readAsText(file);
+});
 document.getElementById("saveName").addEventListener("keydown", e => {
   if (e.key === "Enter") doSave();
 });

@@ -1755,7 +1755,9 @@ applyPreset(PRESETS.reference);
    and need not exist on this page.
 ============================================================ */
 const Q = new URLSearchParams(location.search);
-const EMBED = Q.has("embed");
+/* ?embed=1 in the URL, OR a global set by a srcDoc host (Framer component),
+   which has no URL to carry the query string */
+const EMBED = Q.has("embed") || window.__ORGANIC_EMBED__ === true;
 let EMBED_INTERACT = Q.get("interactive") === "1";
 let extA = null, extB = null, extProgress = 0;
 

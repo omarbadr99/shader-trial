@@ -1759,6 +1759,8 @@ const Q = new URLSearchParams(location.search);
    which has no URL to carry the query string */
 const EMBED = Q.has("embed") || window.__ORGANIC_EMBED__ === true;
 let EMBED_INTERACT = Q.get("interactive") === "1";
+let EMBED_DPR = Math.max(0.5, Math.min(2, parseFloat(Q.get("dpr")) || 1)); // background: 1x by default (the O is soft; retina is wasted cost)
+let EMBED_PAUSED = false;                                                   // host can pause offscreen instances
 let extA = null, extB = null, extProgress = 0;
 
 function resolvePreset(v){
@@ -1792,6 +1794,8 @@ addEventListener("message", ev => {
     EMBED_INTERACT = d.interactive;
     canvas.style.pointerEvents = EMBED_INTERACT ? "auto" : "none";
   }
+  if (typeof d.dpr === "number"){ EMBED_DPR = Math.max(0.5, Math.min(2, d.dpr)); resize(); }
+  if (typeof d.paused === "boolean") EMBED_PAUSED = d.paused;   // stop drawing when offscreen
 });
 
 /* ============================================================
@@ -1918,7 +1922,7 @@ function shortestArc(a, b){
 }
 
 function resize(){
-  const dpr = Math.min(devicePixelRatio || 1, 2);
+  const dpr = Math.min(devicePixelRatio || 1, EMBED ? EMBED_DPR : 2);
   const w = Math.round(innerWidth*dpr), h = Math.round(innerHeight*dpr);
   if (canvas.width !== w || canvas.height !== h){
     canvas.width = w; canvas.height = h;
@@ -1933,6 +1937,10 @@ const pressB  = new Float32Array(MAXB*4);
 function frame(now){
   const dt = Math.min((now - last)/1000, 0.05);
   last = now; frameN++;
+
+  // background instances that are offscreen (or explicitly paused) skip all
+  // GPU work — critical when several breakpoints render at once in Framer
+  if (EMBED && (EMBED_PAUSED || document.hidden)){ requestAnimationFrame(frame); return; }
 
   applyTransition(now);
   /* embed: scroll (or any host) drives the A->B material morph via extProgress */

@@ -1631,13 +1631,62 @@ function doSave(){
 document.getElementById("saveOk").addEventListener("click", doSave);
 document.getElementById("exportPresets").addEventListener("click", () => {
   const data = JSON.stringify(userPresets, null, 2);
-  const blob = new Blob([data], { type: "application/json" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "organic-o-presets.json";
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  // try a real file download (works when not inside a sandboxed iframe)
+  try {
+    const blob = new Blob([data], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "organic-o-presets.json";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  } catch (e) {}
+  // always show a copyable panel — downloads are blocked inside the artifact frame
+  showExportPanel(data);
 });
+
+function showExportPanel(data){
+  const old = document.getElementById("exportOverlay"); if (old) old.remove();
+  const ov = document.createElement("div");
+  ov.id = "exportOverlay";
+  ov.style.cssText = "position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.55);"
+    + "display:flex;align-items:center;justify-content:center;font:13px/1.45 system-ui,sans-serif";
+  const box = document.createElement("div");
+  box.style.cssText = "background:#14151a;color:#e8e8ea;padding:16px;border-radius:10px;"
+    + "width:min(680px,92vw);max-height:84vh;display:flex;flex-direction:column;gap:10px;"
+    + "box-shadow:0 12px 44px rgba(0,0,0,.5)";
+  const head = document.createElement("div");
+  head.style.cssText = "display:flex;justify-content:space-between;align-items:center";
+  head.innerHTML = "<b>Preset export</b>";
+  const x = document.createElement("button");
+  x.textContent = "✕"; x.style.cssText = "background:none;border:none;color:#aaa;cursor:pointer;font-size:16px";
+  x.onclick = () => ov.remove(); head.appendChild(x);
+  const hint = document.createElement("div");
+  hint.style.cssText = "opacity:.7";
+  hint.textContent = "Copy this and paste it to Claude (includes t1, t2 and every saved preset).";
+  const ta = document.createElement("textarea");
+  ta.readOnly = true; ta.value = data;
+  ta.style.cssText = "width:100%;flex:1;min-height:300px;resize:vertical;background:#0c0d11;"
+    + "color:#bfe3d0;border:1px solid #333;border-radius:6px;padding:8px;"
+    + "font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre";
+  const row = document.createElement("div");
+  row.style.cssText = "display:flex;gap:8px;justify-content:flex-end";
+  const copy = document.createElement("button");
+  copy.textContent = "Copy to clipboard";
+  copy.style.cssText = "background:#2b6;border:none;color:#04120a;font-weight:600;"
+    + "padding:8px 14px;border-radius:6px;cursor:pointer";
+  copy.onclick = async () => {
+    ta.focus(); ta.select();
+    let ok = false;
+    try { await navigator.clipboard.writeText(data); ok = true; } catch (e) {}
+    if (!ok) { try { ok = document.execCommand("copy"); } catch (e) {} }
+    copy.textContent = ok ? "Copied ✓" : "Press ⌘/Ctrl-C";
+  };
+  row.appendChild(copy);
+  box.appendChild(head); box.appendChild(hint); box.appendChild(ta); box.appendChild(row);
+  ov.appendChild(box); document.body.appendChild(ov);
+  ov.addEventListener("click", e => { if (e.target === ov) ov.remove(); });
+  ta.focus(); ta.select();
+}
 document.getElementById("importPresets").addEventListener("click", () =>
   document.getElementById("importFile").click());
 document.getElementById("importFile").addEventListener("change", e => {

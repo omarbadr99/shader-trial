@@ -436,6 +436,11 @@ void main(){
 
 const FRAG = `#version 300 es
 precision highp float;
+precision highp int;   // ES 3.00 fragment ints default to mediump; the 32-bit
+                       // bit-mixing hashes (floatBitsToUint * 1664525u ...) need
+                       // full-width uint or they collapse into correlated
+                       // diagonal stripes on some GPUs (Apple Metal), showing as
+                       // dashed hairlines across the tube. SwiftShader hides it.
 out vec4 O;
 
 #define MAXB ${MAXB}

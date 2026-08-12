@@ -1283,15 +1283,18 @@ const PRESETS = {
     ],
   },
   "transparent": {
-    dials: { debug:0, iso:2, ink:0.95, gravity:0.82, crange:0.6,
+    /* true clear glass: iso cleared (was a leftover debug isolation), frost 0,
+       shell milk minimized (thin shell + max clarity) so it reads as glass,
+       not frosted plastic. */
+    dials: { debug:0, iso:0, ink:0.95, gravity:0.82, crange:0.6,
              light:0.9, glare:0.85, speed:1, fluid:0.45, fcenter:0.1,
              fthick:0.4, fdepth:0.12, flag:0.35, fsmooth:0.5, spin:0.16,
              tilt:0.45, tiltspd:1, wob:0.22, wobspd:0.5, morph:0.85,
              morphspd:0.45, ring:1, lobe:0.17, stretch:0.14, tube:0.2,
-             flat:0.7, taper:0.2, zoom:1.18, frost:0.18, wall:0.2,
+             flat:0.7, taper:0.2, zoom:1.18, frost:0.0, wall:0.2,
              speckle:0, soft:0.9, grain:0, bg:0.955, optv1:1,
-             refrfull:1, exposure:1.15, rolloff:0.85, lift:0.015, shellth:0.16,
-             shellcl:0.7, coresoft:0.18, fresstr:1, fresf0:0.04, reflstr:1,
+             refrfull:1, exposure:1.15, rolloff:0.85, lift:0.015, shellth:0.05,
+             shellcl:1.0, coresoft:0.18, fresstr:1, fresf0:0.04, reflstr:1,
              studiorot:0.5, stripw:0.22, strips:0.16, curvresp:0.6, hiwidth:0.09,
              hiint:1, ior:1.45, refrstr:0.7, disp:0.012 },
     blobs: [
@@ -1501,14 +1504,22 @@ function fillTransSelects(){
 
 let trans = null;   // { A, B, start, dur, ease, loop }
 
+/* discrete render-mode switches must NEVER be interpolated: sliding iso/debug
+   through their integer stops renders isolation/debug views mid-transition
+   (the "goes crazy / wrong setting" bug). Skip them and force a clean beauty
+   render, adopting the target's optical mode outright. */
+const SKIP_LERP = new Set(["optv1", "refrfull", "debug", "iso"]);
 function dialLerp(A, B, e){
   for (const d of DIALS){
-    if (d === "optv1" || d === "refrfull") continue;
+    if (SKIP_LERP.has(d)) continue;
     const a = A.dials[d] ?? PRESETS.reference.dials[d];
     const b = B.dials[d] ?? PRESETS.reference.dials[d];
     if (a == null || b == null) continue;
     S[d] = lerp(a, b, e);
   }
+  S.debug = 0; S.iso = 0;                       // no debug/isolation during a blend
+  S.optv1    = B.dials.optv1    ?? 1;
+  S.refrfull = B.dials.refrfull ?? 1;
   for (let i = 0; i < blobs.length; i++){
     const a = A.blobs[i], b = B.blobs[i], w = blobs[i];
     if (a && b){
@@ -1583,7 +1594,10 @@ function applyTransition(now){
   dialLerp(trans.A, trans.B, trans.ease(u));
   scrub.value = u;
   if (u >= 1 && !trans.loop){
-    const B = trans.B; stopTrans(); applyPreset(B);
+    /* finish ON the interpolated end state — do NOT applyPreset(B), which
+       rebuilds the blobs with fresh random angles and pops at the end. */
+    dialLerp(trans.A, trans.B, 1);
+    stopTrans();
   }
 }
 fillTransSelects();

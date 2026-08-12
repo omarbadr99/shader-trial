@@ -1678,6 +1678,55 @@ document.getElementById("iso").addEventListener("change", e => { S.iso = +e.targ
 applyPreset(PRESETS.reference);
 
 /* ============================================================
+   EMBED MODE — background use (Framer etc.).  Activate with ?embed=1
+   Externally controlled, so scroll can drive the material morph:
+     URL:  index.html?embed=1&a=trial%206&b=transparent&p=0&interactive=0
+     msg:  iframe.postMessage({type:"organicO", progress:0..1,
+                               a:<name|preset>, b:<name|preset>,
+                               interactive:bool }, "*")
+   a / b accept a preset NAME (built-in) or a full preset OBJECT
+   ({dials,blobs}) — so custom presets can travel in with the message
+   and need not exist on this page.
+============================================================ */
+const Q = new URLSearchParams(location.search);
+const EMBED = Q.has("embed");
+let EMBED_INTERACT = Q.get("interactive") === "1";
+let extA = null, extB = null, extProgress = 0;
+
+function resolvePreset(v){
+  if (!v) return null;
+  if (typeof v === "string") return presetByName(v);
+  if (v.dials && v.blobs) return v;
+  return null;
+}
+function setExtPair(a, b){
+  const A = resolvePreset(a), B = resolvePreset(b);
+  if (!A || !B) return;
+  extA = A; extB = B;
+  beginBlend(A, B);                      // size the working blob list once
+}
+if (EMBED){
+  for (const id of ["panel", "transbar"]){
+    const el = document.getElementById(id); if (el) el.style.display = "none";
+  }
+  const corner = document.querySelector(".corner");
+  if (corner && Q.get("title") !== "1") corner.style.display = "none";
+  if (!EMBED_INTERACT) canvas.style.pointerEvents = "none";
+  const pp = parseFloat(Q.get("p"));
+  if (!isNaN(pp)) extProgress = Math.min(1, Math.max(0, pp));
+  setExtPair(Q.get("a") || "trial 6", Q.get("b") || "transparent");
+}
+addEventListener("message", ev => {
+  const d = ev.data; if (!d || d.type !== "organicO") return;
+  if (d.a && d.b) setExtPair(d.a, d.b);
+  if (typeof d.progress === "number") extProgress = Math.min(1, Math.max(0, d.progress));
+  if (typeof d.interactive === "boolean"){
+    EMBED_INTERACT = d.interactive;
+    canvas.style.pointerEvents = EMBED_INTERACT ? "auto" : "none";
+  }
+});
+
+/* ============================================================
    Backdrop texture — the frosted glass sees through it
 ============================================================ */
 const bgTex = gl.createTexture();
@@ -1758,11 +1807,13 @@ const drag = { on:false, x:0, y:0, yaw:0, pitch:0 };
 const cursor = { angle:0, has:false, dist:9 };
 
 canvas.addEventListener("pointerdown", e => {
+  if (EMBED && !EMBED_INTERACT) return;          // background: not draggable
   drag.on = true; drag.x = e.clientX; drag.y = e.clientY;
   canvas.classList.add("dragging");
   canvas.setPointerCapture(e.pointerId);
 });
 canvas.addEventListener("pointermove", e => {
+  if (EMBED && !EMBED_INTERACT) return;          // background: ignore the cursor
   const cx = e.clientX - innerWidth/2, cy = innerHeight/2 - e.clientY;
   cursor.angle = Math.atan2(cy, cx);
   cursor.dist  = Math.hypot(cx, cy) / innerHeight;   // 0 at centre, ~0.4 at O edge
@@ -1817,6 +1868,8 @@ function frame(now){
   last = now; frameN++;
 
   applyTransition(now);
+  /* embed: scroll (or any host) drives the A->B material morph via extProgress */
+  if (EMBED && extA && extB && !trans) dialLerp(extA, extB, EASE.smooth(extProgress));
 
   const dts = dt * S.speed;          // master clock — one dial scales it all
   if (!paused){

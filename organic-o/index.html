@@ -1398,9 +1398,14 @@ try { userPresets = JSON.parse(localStorage.getItem(LS_KEY)) || {}; } catch(e){}
 function persistPresets(){
   try { localStorage.setItem(LS_KEY, JSON.stringify(userPresets)); } catch(e){}
 }
+/* camera orbit state — declared here so presets can capture/restore the
+   view angle (front vs back facing) alongside the dials */
+const drag = { on:false, x:0, y:0, yaw:0, pitch:0 };
+
 function snapshot(){
   return {
     dials: Object.assign({}, S),
+    view: { yaw: drag.yaw, pitch: drag.pitch },   // orbit orientation
     blobs: blobs.map(b => ({ color:b.color, size:b.size, speed:b.speed,
                              amt:b.amt, tail:b.tail, drift:b.drift, follow:b.follow })),
   };
@@ -1417,6 +1422,7 @@ function applyPreset(p){
     const lbl = document.getElementById("v-"+id);
     if (lbl) lbl.textContent = fmt(S[id]);
   }
+  if (p.view){ drag.yaw = p.view.yaw; drag.pitch = p.view.pitch; }   // restore view
   blobs = p.blobs.map(b => mkBlob(Object.assign({}, b)));
   renderBlobs();
 }
@@ -1520,6 +1526,14 @@ function dialLerp(A, B, e){
   S.debug = 0; S.iso = 0;                       // no debug/isolation during a blend
   S.optv1    = B.dials.optv1    ?? 1;
   S.refrfull = B.dials.refrfull ?? 1;
+  /* rotate the camera between the two saved views (front <-> back facing).
+     Only when at least one side stored a view, so name-only presets don't
+     yank the orbit. */
+  if (A.view || B.view){
+    const av = A.view || { yaw:0, pitch:0 }, bv = B.view || { yaw:0, pitch:0 };
+    drag.yaw   = lerp(av.yaw,   bv.yaw,   e);
+    drag.pitch = lerp(av.pitch, bv.pitch, e);
+  }
   for (let i = 0; i < blobs.length; i++){
     const a = A.blobs[i], b = B.blobs[i], w = blobs[i];
     if (a && b){
@@ -1803,7 +1817,6 @@ document.getElementById("imgoy").addEventListener("input", e => {
 /* ============================================================
    Pointer: drag = orbit; cursor angle can drive blobs marked "cursor"
 ============================================================ */
-const drag = { on:false, x:0, y:0, yaw:0, pitch:0 };
 const cursor = { angle:0, has:false, dist:9 };
 
 canvas.addEventListener("pointerdown", e => {

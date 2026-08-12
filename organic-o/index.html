@@ -1422,7 +1422,10 @@ function applyPreset(p){
     const lbl = document.getElementById("v-"+id);
     if (lbl) lbl.textContent = fmt(S[id]);
   }
-  if (p.view){ drag.yaw = p.view.yaw; drag.pitch = p.view.pitch; }   // restore view
+  // restore the saved view; a preset with no stored view is front-facing,
+  // so it snaps back to 0 instead of keeping whatever angle you last orbited
+  drag.yaw   = p.view ? p.view.yaw   : 0;
+  drag.pitch = p.view ? p.view.pitch : 0;
   blobs = p.blobs.map(b => mkBlob(Object.assign({}, b)));
   renderBlobs();
 }

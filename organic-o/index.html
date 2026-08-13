@@ -206,6 +206,14 @@
 
     <div class="sec">OPTICAL SHELL V1</div>
 
+    <div class="ctl"><label>Render scale</label>
+      <select id="rscale" style="font:inherit; border:1.5px solid #111; background:none; padding:3px 4px;">
+        <option value="0">Auto (native DPR)</option>
+        <option value="1">1× — matches Framer output, no hairlines</option>
+        <option value="1.5">1.5×</option>
+        <option value="2">2×</option>
+      </select></div>
+
     <div class="ctl"><label>Debug view</label>
       <select id="debug" style="font:inherit; border:1.5px solid #111; background:none; padding:3px 4px;">
         <option value="0">Final</option>
@@ -1745,6 +1753,8 @@ document.getElementById("panelHead").addEventListener("click", () => {
 S.debug = 0; S.iso = 0;
 document.getElementById("debug").addEventListener("change", e => { S.debug = +e.target.value; });
 document.getElementById("iso").addEventListener("change", e => { S.iso = +e.target.value; });
+let renderCap = 0;   // 0 = auto (native DPR up to 2x); else fixed scale
+document.getElementById("rscale").addEventListener("change", e => { renderCap = +e.target.value; resize(); });
 
 applyPreset(PRESETS.reference);
 
@@ -1927,7 +1937,8 @@ function shortestArc(a, b){
 }
 
 function resize(){
-  const dpr = Math.min(devicePixelRatio || 1, EMBED ? EMBED_DPR : 2);
+  const cap = EMBED ? EMBED_DPR : (renderCap || 2);   // renderCap 0 = auto (native, up to 2x)
+  const dpr = Math.min(devicePixelRatio || 1, cap);
   const w = Math.round(innerWidth*dpr), h = Math.round(innerHeight*dpr);
   if (canvas.width !== w || canvas.height !== h){
     canvas.width = w; canvas.height = h;

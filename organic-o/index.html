@@ -215,6 +215,9 @@
       </select></div>
 
     <div class="ctl toggles" style="display:flex; gap:14px; flex-wrap:wrap">
+      <label style="display:flex;gap:5px;cursor:pointer"><input type="checkbox" id="transpChk"> Transparent BG</label>
+      <label style="display:flex;gap:5px;cursor:pointer"><input type="checkbox" id="shadowKillChk"> SHADOW KILL TEST</label>
+      <label style="display:flex;gap:5px;cursor:pointer"><input type="checkbox" id="alphaDebugChk"> Alpha debug</label>
       <label style="display:flex;gap:5px;cursor:pointer"><input type="checkbox" id="freeze"> Freeze frame</label>
       <label style="display:flex;gap:5px;cursor:pointer"><input type="checkbox" id="hud"> Perf HUD</label>
       <label style="display:flex;gap:5px;cursor:pointer"><input type="checkbox" id="probe"> Pixel probe</label>
@@ -436,6 +439,34 @@
 /* ============================================================
    GL setup
 ============================================================ */
+/* ============================================================
+   BUILD FINGERPRINT — proves which code is actually running.
+   Visible badge (embed mode included) + console line on startup.
+   Hide with ?badge=0, or postMessage {type:"organicO", badge:false}.
+============================================================ */
+const BUILD_ID     = "SHADOW-FIX-01";
+const BUILD_COMMIT = "__BUILD_COMMIT__";
+const BUILD_TIME   = "__BUILD_TIME__";
+const BUILD_SHA    = "__BUILD_SHA__";   // sha256-12 of this file with
+                                        // the stamps blanked: verifiable
+                                        // without trusting git at all
+console.log(
+  "%cBUILD: " + BUILD_ID + "\nCommit: " + BUILD_COMMIT + "\nBuilt: " + BUILD_TIME + "\nSHA: " + BUILD_SHA,
+  "font:12px ui-monospace,Menlo,monospace;color:#0a7;font-weight:700"
+);
+addEventListener("DOMContentLoaded", () => {
+  if (new URLSearchParams(location.search).get("badge") === "0") return;
+  const el = document.createElement("div");
+  el.id = "buildBadge";
+  el.textContent = "BUILD: " + BUILD_ID + " · " + BUILD_COMMIT + " · " + BUILD_SHA + " · " + BUILD_TIME;
+  el.style.cssText =
+    "position:fixed;left:8px;bottom:8px;z-index:999999;pointer-events:none;"
+    + "font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;"
+    + "background:#0a7;color:#fff;padding:4px 8px;border-radius:3px;"
+    + "white-space:pre;letter-spacing:.02em;box-shadow:none";
+  document.body.appendChild(el);
+});
+
 const canvas = document.getElementById("gl");
 /* alpha:true so embed mode can composite over the host page; the shader
    writes a=1 everywhere in opaque mode, so the tool renders identically */
@@ -489,8 +520,12 @@ uniform float uSoft;              // silhouette AA in pixels
 uniform float uJitter;            // per-frame dither for the volume integral
 uniform sampler2D uBgTex;         // backdrop image (see-through frost)
 uniform float uBgMode;            // 0 = flat color, 1 = texture
-uniform float uTransp;            // 1 = transparent output: alpha = O coverage + shadow;
+uniform float uTransp;            // 1 = transparent output: alpha = O coverage;
                                   // uBg still feeds the glass optics (refraction backdrop)
+uniform float uShadowKill;        // 1 = zero EVERY shader-side darkening outside the
+                                  // object: contact shadow, vignette, bg gradient
+uniform float uAlphaDebug;        // 1 = render the emitted coverage alpha as grayscale
+                                  // (black = 0, white = 1) instead of the material
 uniform vec2  uTexScale;          // aspect-fit scale for the backdrop
 uniform vec2  uTexFlip;           // per-axis sign (y = -1 corrects GL flip)
 uniform float uTexZoom;           // backdrop scale
@@ -861,9 +896,16 @@ void main(){
   suv += 0.5 + uTexOffset;
   vec3 bgBase = uBgMode > 0.5 ? texture(uBgTex, suv).rgb : uBg;
   float vig = length(uv)*0.5;
-  vec3 bg = bgBase * (1.0 - 0.04*vig*vig) * (1.0 + 0.008*uv.y);
+  /* SHADOW KILL: drop the vignette, the vertical gradient AND the contact
+     shadow, leaving a mathematically flat backdrop. Anything still darker
+     than flat outside the object is then provably not from this shader. */
+  vec3 bg = uShadowKill > 0.5
+          ? bgBase
+          : bgBase * (1.0 - 0.04*vig*vig) * (1.0 + 0.008*uv.y);
   float below = smoothstep(0.15, -0.45, uv.y);
-  float shad = (0.018 + 0.05*below*uLight) * exp(-max(minD, 0.0)*2.2);
+  float shad = uShadowKill > 0.5
+             ? 0.0
+             : (0.018 + 0.05*below*uLight) * exp(-max(minD, 0.0)*2.2);
   bg *= 1.0 - shad;
 
   float wpp = tAt * 1.24 / uRes.y;
@@ -1187,6 +1229,14 @@ void main(){
   }
   }
 
+  /* ALPHA DEBUG — show the coverage alpha this pixel emits in transparent
+     mode, as grayscale. Black = alpha 0 (page shows through untouched),
+     white = alpha 1 (opaque object). If a shadow shape is visible here, the
+     shadow is coming out of this shader; if this is pure black outside the
+     O and a shadow still appears on the page, the shadow is added outside
+     the shader (CSS/Framer). Runs before every other debug branch. */
+  if (uAlphaDebug > 0.5){ O = vec4(vec3(clamp(alpha, 0.0, 1.0)), 1.0); return; }
+
   if (uDebug > 0){
     bool bad = inv1(dFresid)||inv1(dEsteps)||inv1(dEresid)||inv1(dL)||inv1(dTIR)
              ||inv1(dF)||inv1(dKap)||inv1(dShell)||inv1(dCore)
@@ -1301,7 +1351,8 @@ const U = {};
  "uSafe","uPressN","uPressB","uBlobN","uBlobA","uBlobAbs",
  "uOptV1","uExposure","uRolloff","uLift","uShellTh","uShellCl","uCoreSoft",
  "uFresStr","uF0","uReflStr","uStudioRot","uStripW","uStripSoft",
- "uCurvResp","uHiWidth","uHiInt","uIOR","uRefrStr","uDisp","uRefrFull","uDebug","uIso","uProbeRaw","uBoundR","uTransp"]
+ "uCurvResp","uHiWidth","uHiInt","uIOR","uRefrStr","uDisp","uRefrFull","uDebug","uIso","uProbeRaw","uBoundR",
+ "uTransp","uShadowKill","uAlphaDebug"]
  .forEach(n => U[n] = gl.getUniformLocation(prog, n));
 
 /* ============================================================
@@ -1882,6 +1933,33 @@ function applyTransparentCSS(){
   document.body.style.background = v;
 }
 if (TRANSPARENT) applyTransparentCSS();
+
+/* ---- SHADOW KILL / ALPHA DEBUG -------------------------------------
+   Shadow kill also strips every CSS route to a shadow inside this
+   document (box-shadow, drop-shadow/filter, backdrop-filter, text-shadow,
+   and any ::before/::after that could paint one), so the only shadow that
+   can survive is one drawn by a parent OUTSIDE this iframe. */
+let SHADOW_KILL = Q.get("shadowkill") === "1" || window.__ORGANIC_SHADOWKILL__ === true;
+let ALPHA_DEBUG = Q.get("alphadebug") === "1" || window.__ORGANIC_ALPHADEBUG__ === true;
+let shadowKillStyle = null;
+function applyShadowKillCSS(){
+  if (SHADOW_KILL && !shadowKillStyle){
+    shadowKillStyle = document.createElement("style");
+    shadowKillStyle.id = "shadow-kill";
+    shadowKillStyle.textContent =
+      "*, *::before, *::after {"
+      + "box-shadow:none !important; text-shadow:none !important;"
+      + "filter:none !important; -webkit-filter:none !important;"
+      + "backdrop-filter:none !important; -webkit-backdrop-filter:none !important;"
+      + "mix-blend-mode:normal !important; }"
+      + "html, body { background:transparent !important; }"
+      + "canvas#gl { background:transparent !important; }";
+    document.head.appendChild(shadowKillStyle);
+  } else if (!SHADOW_KILL && shadowKillStyle){
+    shadowKillStyle.remove(); shadowKillStyle = null;
+  }
+}
+addEventListener("DOMContentLoaded", applyShadowKillCSS);
 let extA = null, extB = null, extProgress = 0;
 
 function resolvePreset(v){
@@ -1918,6 +1996,12 @@ addEventListener("message", ev => {
   if (typeof d.dpr === "number"){ EMBED_DPR = Math.max(0.5, Math.min(2, d.dpr)); resize(); }
   if (typeof d.paused === "boolean") EMBED_PAUSED = d.paused;   // stop drawing when offscreen
   if (typeof d.transparent === "boolean"){ TRANSPARENT = d.transparent; applyTransparentCSS(); }
+  if (typeof d.shadowKill === "boolean"){ SHADOW_KILL = d.shadowKill; applyShadowKillCSS(); }
+  if (typeof d.alphaDebug === "boolean") ALPHA_DEBUG = d.alphaDebug;
+  if (typeof d.badge === "boolean"){
+    const el = document.getElementById("buildBadge");
+    if (el) el.style.display = d.badge ? "" : "none";
+  }
   /* diagnostics from the host (Framer A/B testing) */
   if (typeof d.freeze === "boolean"){
     freeze = d.freeze;
@@ -2137,6 +2221,8 @@ function drawScene(W, H){
 
   gl.uniform2f(U.uRes, W, H);
   gl.uniform1f(U.uTransp, TRANSPARENT ? 1 : 0);
+  gl.uniform1f(U.uShadowKill, SHADOW_KILL ? 1 : 0);
+  gl.uniform1f(U.uAlphaDebug, ALPHA_DEBUG ? 1 : 0);
   gl.uniform1f(U.uYaw,   drag.yaw + tiltYaw);
   gl.uniform1f(U.uPitch, drag.pitch + tiltPitch);
   gl.uniform1f(U.uSpinPhase, ph.spin);
@@ -2318,6 +2404,19 @@ const hudBox = mkBox("left"), probeBox = mkBox("right");
 
 /* ---------- freeze ---------- */
 document.getElementById("freeze").addEventListener("change", e => { freeze = e.target.checked; });
+
+/* deployment-diagnostic toggles (standalone page) */
+{
+  const tc = document.getElementById("transpChk"),
+        sk = document.getElementById("shadowKillChk"),
+        ad = document.getElementById("alphaDebugChk");
+  if (tc){ tc.checked = TRANSPARENT;
+    tc.addEventListener("change", e => { TRANSPARENT = e.target.checked; applyTransparentCSS(); }); }
+  if (sk){ sk.checked = SHADOW_KILL;
+    sk.addEventListener("change", e => { SHADOW_KILL = e.target.checked; applyShadowKillCSS(); }); }
+  if (ad){ ad.checked = ALPHA_DEBUG;
+    ad.addEventListener("change", e => { ALPHA_DEBUG = e.target.checked; }); }
+}
 
 /* ---------- perf HUD ---------- */
 document.getElementById("hud").addEventListener("change", e => {

@@ -68,8 +68,21 @@ export default function OrganicO(props) {
     const ref = useRef(null)
     const { scrollYProgress } = useScroll()
 
-    const A = parseJSON(presetAJson) || BUILT_IN[presetAName] || presetAName
-    const B = parseJSON(presetBJson) || BUILT_IN[presetBName] || presetBName
+    /* Framer's String controls hand back "" (not undefined) when empty, so a
+       default PARAMETER never fires for them. Resolving to "" used to send
+       empty names, which the page ignored — it then kept its own built-ins
+       ("trial 6" -> "transparent") and the scroll ran the wrong journey
+       entirely. Always resolve to a real preset object. */
+    const resolvePreset = (json, name, fallback) => {
+        const parsed = parseJSON(json)
+        if (parsed) return parsed
+        const key = typeof name === "string" ? name.trim() : ""
+        if (key && BUILT_IN[key]) return BUILT_IN[key]
+        if (key) return key                 // a page built-in name, e.g. "lava"
+        return fallback                     // empty -> the baked-in default
+    }
+    const A = resolvePreset(presetAJson, presetAName, BUILT_IN.t1)
+    const B = resolvePreset(presetBJson, presetBName, BUILT_IN.t2)
 
     const post = useCallback((msg) => {
         ref.current?.contentWindow?.postMessage({ type: "organicO", ...msg }, "*")

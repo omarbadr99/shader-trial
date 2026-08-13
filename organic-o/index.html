@@ -445,10 +445,10 @@
    Visible badge (embed mode included) + console line on startup.
    Hide with ?badge=0, or postMessage {type:"organicO", badge:false}.
 ============================================================ */
-const BUILD_ID     = "NOSHADOW-1X-03";
-const BUILD_COMMIT = "a700d68";
-const BUILD_TIME   = "2026-08-13T19:52:17Z";
-const BUILD_SHA    = "4891535f4335";   // sha256-12 of this file with
+const BUILD_ID     = "PRESETFIX-04";
+const BUILD_COMMIT = "__BUILD_COMMIT__";
+const BUILD_TIME   = "__BUILD_TIME__";
+const BUILD_SHA    = "__BUILD_SHA__";   // sha256-12 of this file with
                                         // the stamps blanked: verifiable
                                         // without trusting git at all
 console.log(
@@ -524,7 +524,7 @@ uniform float uBgMode;            // 0 = flat color, 1 = texture
 uniform float uTransp;            // 1 = transparent output: alpha = O coverage;
                                   // uBg still feeds the glass optics (refraction backdrop)
 uniform float uPathAA;            // 1 = local path-length AA at the flip boundary
-uniform vec2  uAAThr;             // x = near-tangency band, y = min chord remaining
+uniform vec2  uAAThr;             // smoothstep band over chord disagreement
 uniform float uAlphaDebug;        // 1 = render the emitted coverage alpha as grayscale
                                   // (black = 0, white = 1) instead of the material
 uniform vec2  uTexScale;          // aspect-fit scale for the backdrop
@@ -1005,21 +1005,10 @@ void main(){
       float Lr; vec3 cDir; vec3 cOrig; float eSteps=0.0;
       float pathAA = 0.0;                       // 1 = this pixel took extra samples
       if (uRefrFull > 0.5 && uIso != 3){
-        /* Predictor for the path-length discontinuity, derived from the SDF
-           the march already evaluates — no derivatives, no extra taps.
-           Inside the glass dd is negative; a ray that passes TANGENTIALLY
-           close to the inner wall mid-chord (dd approaching 0 well before it
-           actually leaves) is one that a sub-pixel nudge can flip between
-           "exits here" and "carries on through the far wall". That flip is
-           the chord-length jump that draws the rim hairline. Rays merely
-           arriving at their exit also have dd -> 0, so the near-tangency
-           only counts when it happens with chord still left to travel. */
-        float ddMax = -1e9, tAtMax = 0.0;
         float ti = 0.012, tiPrev = 0.0;
         for (int i=0; i<48; i++){
           float dd = map(pIn + rdIn*ti); eSteps += 1.0;
           if (dd > 0.0015) break;
-          if (dd > ddMax){ ddMax = dd; tAtMax = ti; }
           tiPrev = ti; ti += max(-dd/(uSafe*uFlat), 0.012);
         }
         float a2 = tiPrev, b2 = ti;
@@ -1029,25 +1018,32 @@ void main(){
         }
         Lr = 0.5*(a2+b2); cDir = rdIn; cOrig = pIn;
 
-        if (uPathAA > 0.5 && ddMax > -uAAThr.x && (Lr - tAtMax) > uAAThr.y){
-          /* Flagged: average the chord over the pixel footprint. Two extra
-             sub-pixel directions through the SAME entry point (the front
-             surface is smooth here — it is the EXIT that flips), so the cost
-             is two exit marches, not two full traversals. Averaging the
-             chord before the volume integral keeps that integral at one
-             pass, and turns the hard jump into a footprint-wide ramp. */
-          /* The neighbouring pixel's chord differs mainly because its ray
-             ENTERS the glass a pixel-footprint away along the surface, not
-             because its direction tilts by a fraction of a degree. So step
-             the entry point across the surface tangent plane by +/-0.35 of
-             the world-space pixel footprint and re-march from there. */
+        /* DETECTION BY DISAGREEMENT, not by prediction. The earlier analytic
+           predictor (near-tangency mid-chord) flagged a band through the
+           middle of the tube instead of the rim and changed 17 pixels by
+           1/255 — it simply did not locate the jump. So stop guessing where
+           the boundary is: march ONE neighbouring chord, a pixel-footprint
+           away across the surface, and compare. If it disagrees materially,
+           this pixel straddles the near-wall/far-wall flip; march the
+           opposite neighbour too and average all three, which replaces the
+           hard step with a footprint-wide ramp. Agreement (the common case)
+           costs one extra exit march and nothing else. */
+        if (uPathAA > 0.5){
+          /* Both neighbours are marched unconditionally and the blend weight
+             is CONTINUOUS in the disagreement. A binary "average only if the
+             chords differ" test was measurably worse than no AA at all
+             (ridge count 1073 -> 1647): the test flips between adjacent
+             pixels, so it draws a fresh edge of its own exactly where it
+             engages. A smoothstep has no such switch. */
           vec3 tx = normalize(cross(n, rd));
           vec3 ty = cross(n, tx);
-          vec3 off = (tx + ty) * (0.35 * wppH);
-          float L1 = exitChord(p + off + rdIn*0.004, rdIn);
-          float L2 = exitChord(p - off + rdIn*0.004, rdIn);
-          Lr = (Lr + L1 + L2) / 3.0;
-          pathAA = 1.0;
+          vec3 offA = (tx + ty) * (0.5 * wppH);
+          float La = exitChord(p + offA + rdIn*0.004, rdIn);
+          float Lb = exitChord(p - offA + rdIn*0.004, rdIn);
+          float dis = max(abs(La - Lr), abs(Lb - Lr));
+          float w = smoothstep(uAAThr.x, uAAThr.y, dis);
+          Lr = mix(Lr, (Lr + La + Lb) / 3.0, w);
+          pathAA = w;
         }
       } else {
         float tEx2 = t0 + 0.004, tePrev = t0 + 0.004;
@@ -1989,12 +1985,19 @@ let EMBED_DPR = Q.has("dpr") ? dprFrom(Q.get("dpr")) : 1;
 /* multiplies the preset's zoom, so the O can be sized to a container
    without editing presets (apparent size scales with canvas HEIGHT) */
 let ZOOM_MUL = 1;
-/* Local path-length AA: OFF. The predictor lands on a band through the
-   middle of the tube rather than on the rim line, and enabling it moved
-   17 pixels by 1/255 — a no-op that still costs two extra exit marches
-   on every flagged pixel. Kept behind ?pathaa=1 for further work. */
+/* Local path-length AA: OFF, and staying off until it is proven to help.
+   Measured on the worst frames of the A->B journey (ridge-pixel count,
+   3 samples each):
+     baseline           prog 0.30: 639   prog 0.45: 962
+     binary threshold   prog 0.30: 1021  prog 0.45: 1647
+     continuous blend   prog 0.30: 921   prog 0.45: 1482
+   Averaging the chord makes the artifact WORSE in both forms. The chord
+   discontinuity is real and coincides with the line (99.7% of ridge pixels),
+   but it is a symptom of the far-wall visibility flip, not the whole cause —
+   averaging L perturbs the ink absorption without antialiasing the edge.
+   Enable with ?pathaa=1 only for further experiments. */
 let PATH_AA = Q.get("pathaa") === "1";
-let AA_THR = [0.002, 0.12];
+let AA_THR = [0.01, 0.08];  // smoothstep band over chord disagreement
 let EMBED_PAUSED = false;                                                   // host can pause offscreen instances
 /* transparent output: no studio backdrop — the O (plus its soft shadow)
    floats over whatever the host page draws behind the iframe */

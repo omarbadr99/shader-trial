@@ -214,6 +214,12 @@
         <option value="2">2×</option>
       </select></div>
 
+    <div class="ctl toggles" style="display:flex; gap:14px; flex-wrap:wrap">
+      <label style="display:flex;gap:5px;cursor:pointer"><input type="checkbox" id="freeze"> Freeze frame</label>
+      <label style="display:flex;gap:5px;cursor:pointer"><input type="checkbox" id="hud"> Perf HUD</label>
+      <label style="display:flex;gap:5px;cursor:pointer"><input type="checkbox" id="probe"> Pixel probe</label>
+    </div>
+
     <div class="ctl"><label>Debug view</label>
       <select id="debug" style="font:inherit; border:1.5px solid #111; background:none; padding:3px 4px;">
         <option value="0">Final</option>
@@ -647,6 +653,9 @@ uniform float uIOR, uRefrStr, uDisp;               // refraction v1
 uniform float uRefrFull;                           // 1 = full two-interface march
 uniform int   uDebug;    // 0 = Final, else a diagnostic buffer
 uniform int   uIso;      // 0 = none, else a binary-isolation test
+uniform float uProbeRaw; // 1 = write RAW float values for uDebug's channel
+                         // (rendered to an RGBA32F target and read back by
+                         // the pixel probe; never active in normal drawing)
 
 vec3 toLin(vec3 c){ return pow(max(c, vec3(0.0)), vec3(2.2)); }
 vec3 toSRGB(vec3 c){ return pow(max(c, vec3(0.0)), vec3(1.0/2.2)); }
@@ -1147,6 +1156,26 @@ void main(){
              ||inv1(dF)||inv1(dKap)||inv1(dShell)||inv1(dCore)
              ||inv3(dN)||inv3(dNEx)||inv3(dRefl)||inv3(dRefr)
              ||inv3(dEnvRaw)||inv3(dEnvFilt)||inv3(dOD)||inv3(dPre);
+    /* pixel-probe raw output: exact, un-encoded floats for readback.
+       Runs BEFORE the bad-return so NaN/Inf reach the probe unmasked. */
+    if (uProbeRaw > 0.5){
+      vec3 pv = vec3(0.0);
+      if      (uDebug==1)  pv = vec3(alpha, dFsteps, dEsteps);
+      else if (uDebug==2)  pv = vec3(dT0, dL, dT0 + dL);
+      else if (uDebug==3)  pv = vec3(dFresid, dEresid, minD);
+      else if (uDebug==9)  pv = dN;
+      else if (uDebug==10) pv = dNEx;
+      else if (uDebug==11) pv = dRefl;
+      else if (uDebug==12) pv = dRefr;
+      else if (uDebug==13) pv = vec3(dTIR, dF, dKap);
+      else if (uDebug==16) pv = dEnvRaw;
+      else if (uDebug==17) pv = dEnvFilt;
+      else if (uDebug==18) pv = vec3(dShell, dCore, 0.0);
+      else if (uDebug==20) pv = dOD;
+      else if (uDebug==21) pv = dPre;
+      else if (uDebug==22) pv = vec3(bad ? 1.0 : 0.0, 0.0, 0.0);
+      O = vec4(pv, 1.0); return;
+    }
     if (bad){ O = vec4(1.0, 0.0, 1.0, 1.0); return; }
     if (uDebug == 22){ O = vec4(0.0, 0.0, 0.0, 1.0); return; }
     vec3 dc = vec3(0.0);
@@ -1207,7 +1236,7 @@ const U = {};
  "uSafe","uPressN","uPressB","uBlobN","uBlobA","uBlobAbs",
  "uOptV1","uExposure","uRolloff","uLift","uShellTh","uShellCl","uCoreSoft",
  "uFresStr","uF0","uReflStr","uStudioRot","uStripW","uStripSoft",
- "uCurvResp","uHiWidth","uHiInt","uIOR","uRefrStr","uDisp","uRefrFull","uDebug","uIso"]
+ "uCurvResp","uHiWidth","uHiInt","uIOR","uRefrStr","uDisp","uRefrFull","uDebug","uIso","uProbeRaw"]
  .forEach(n => U[n] = gl.getUniformLocation(prog, n));
 
 /* ============================================================
@@ -1814,6 +1843,15 @@ addEventListener("message", ev => {
   }
   if (typeof d.dpr === "number"){ EMBED_DPR = Math.max(0.5, Math.min(2, d.dpr)); resize(); }
   if (typeof d.paused === "boolean") EMBED_PAUSED = d.paused;   // stop drawing when offscreen
+  /* diagnostics from the host (Framer A/B testing) */
+  if (typeof d.freeze === "boolean"){
+    freeze = d.freeze;
+    const cb = document.getElementById("freeze"); if (cb) cb.checked = d.freeze;
+  }
+  if (typeof d.hud === "boolean"){
+    const cb = document.getElementById("hud");
+    if (cb){ cb.checked = d.hud; cb.dispatchEvent(new Event("change")); }
+  }
 });
 
 /* ============================================================
@@ -1896,6 +1934,7 @@ document.getElementById("imgoy").addEventListener("input", e => {
 const cursor = { angle:0, has:false, dist:9 };
 
 canvas.addEventListener("pointerdown", e => {
+  if (probeOn){ doProbe(e); return; }            // probe click, not a drag
   if (EMBED && !EMBED_INTERACT) return;          // background: not draggable
   drag.on = true; drag.x = e.clientX; drag.y = e.clientY;
   canvas.classList.add("dragging");
@@ -1954,8 +1993,10 @@ const blobAbs = new Float32Array(MAXB*3);
 const pressB  = new Float32Array(MAXB*4);
 
 function frame(now){
+  const _cpu0 = performance.now();
   const dt = Math.min((now - last)/1000, 0.05);
-  last = now; frameN++;
+  last = now;
+  if (!freeze) frameN++;          // frozen -> uJitter static -> identical pixels
 
   // background instances that are offscreen (or explicitly paused) skip all
   // GPU work — critical when several breakpoints render at once in Framer
@@ -1966,7 +2007,7 @@ function frame(now){
   if (EMBED && extA && extB && !trans) dialLerp(extA, extB, EASE.smooth(extProgress));
 
   const dts = dt * S.speed;          // master clock — one dial scales it all
-  if (!paused){
+  if (!paused && !freeze){
     ph.t    += dts;
     /* when the fluid drives the motion, constant-rate rotations step back:
        spin damped, stretch-axis rotation nearly frozen */
@@ -1992,6 +2033,16 @@ function frame(now){
   }
 
   resize();
+  drawScene();
+  perfTick(now, performance.now() - _cpu0);
+  requestAnimationFrame(frame);
+}
+
+/* All uniform upload + the draw call. W/H default to the canvas; the probe
+   and the HUD stats pass render the SAME state to offscreen float targets
+   (optionally at another resolution) without touching the sim or the RAF. */
+function drawScene(W, H){
+  W = W || canvas.width;  H = H || canvas.height;
 
   /* precessing tilt: two incommensurate frequencies */
   const tiltYaw   = S.tilt * 0.55 * Math.sin(ph.t * 0.31 * S.tiltspd);
@@ -2009,7 +2060,7 @@ function frame(now){
     blobAbs[i*3] = A[0]; blobAbs[i*3+1] = A[1]; blobAbs[i*3+2] = A[2];
   }
 
-  gl.uniform2f(U.uRes, canvas.width, canvas.height);
+  gl.uniform2f(U.uRes, W, H);
   gl.uniform1f(U.uYaw,   drag.yaw + tiltYaw);
   gl.uniform1f(U.uPitch, drag.pitch + tiltPitch);
   gl.uniform1f(U.uSpinPhase, ph.spin);
@@ -2047,7 +2098,7 @@ function frame(now){
   gl.uniform1f(U.uJitter, (frameN % 64) * 0.618);
   gl.uniform1f(U.uBgMode, bgMode);
   {
-    const ca = canvas.width / canvas.height, ta = texW / texH;
+    const ca = W / H, ta = texW / texH;
     const sc = texCfg.fit === "contain"
       ? (ta > ca ? [1, ta/ca] : [ca/ta, 1])     // whole image visible
       : (ta > ca ? [ca/ta, 1] : [1, ta/ca]);    // cover: fill, crop
@@ -2123,10 +2174,204 @@ function frame(now){
   gl.uniform1f(U.uRefrFull, S.refrfull);
   gl.uniform1i(U.uDebug, S.debug | 0);
   gl.uniform1i(U.uIso, S.iso | 0);
+  gl.uniform1f(U.uProbeRaw, probeRawFlag);
 
   gl.drawArrays(gl.TRIANGLES, 0, 3);
-  requestAnimationFrame(frame);
 }
+
+/* ============================================================
+   DIAGNOSTIC INSTRUMENTATION — freeze / pixel probe / perf HUD.
+   Everything here is default-off and adds zero work when off.
+============================================================ */
+let freeze = false, probeOn = false, hudOn = false, probeRawFlag = 0;
+const extCBF = gl.getExtension("EXT_color_buffer_float");   // float readback
+
+window.__organicRenderers = (window.__organicRenderers || 0) + 1;
+
+function contextReport(){
+  const a = gl.getContextAttributes();
+  const dri = gl.getExtension("WEBGL_debug_renderer_info");
+  const rect = canvas.getBoundingClientRect();
+  const cssW = rect.width, cssH = rect.height;
+  const intMap = Math.abs(cssW*devicePixelRatio - Math.round(cssW*devicePixelRatio)) < 1e-6 &&
+                 Math.abs(cssH*devicePixelRatio - Math.round(cssH*devicePixelRatio)) < 1e-6;
+  return {
+    version: gl.getParameter(gl.VERSION),
+    renderer: dri ? gl.getParameter(dri.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER),
+    attributes: a,
+    drawingBuffer: [gl.drawingBufferWidth, gl.drawingBufferHeight],
+    cssSize: [+cssW.toFixed(2), +cssH.toFixed(2)],
+    devicePixelRatio: devicePixelRatio,
+    internalScale: +(gl.drawingBufferWidth / cssW).toFixed(3),
+    integerPixelMapping: intMap,
+    floatReadback: !!extCBF,
+    embed: EMBED,
+    renderersOnPage: window.__organicRenderers,
+  };
+}
+const CTX_REPORT = contextReport();
+console.log("[OrganicO] context", CTX_REPORT);
+if (EMBED){ try { parent.postMessage({ type:"organicO.ctx", report: CTX_REPORT }, "*"); } catch(e){} }
+
+/* ---------- overlay boxes ---------- */
+function mkBox(side){
+  const el = document.createElement("pre");
+  el.style.cssText = "display:none; position:fixed; "+side+":10px; bottom:10px; z-index:99998;"
+    + "background:rgba(10,12,16,.88); color:#9fe8c0; font:11px/1.5 ui-monospace,Menlo,monospace;"
+    + "padding:8px 10px; border-radius:6px; max-width:46vw; max-height:52vh; overflow:auto; margin:0;"
+    + "white-space:pre; user-select:text;";
+  document.body.appendChild(el); return el;
+}
+const hudBox = mkBox("left"), probeBox = mkBox("right");
+
+/* ---------- freeze ---------- */
+document.getElementById("freeze").addEventListener("change", e => { freeze = e.target.checked; });
+
+/* ---------- perf HUD ---------- */
+document.getElementById("hud").addEventListener("change", e => {
+  hudOn = e.target.checked; hudBox.style.display = hudOn ? "block" : "none";
+});
+const perf = { dts: [], cpu: [], n: 0, march: "march: (collecting…)" };
+function perfTick(now, cpuMs){
+  if (!hudOn) return;
+  perf.dts.push(now); perf.cpu.push(cpuMs);
+  if (perf.dts.length > 121){ perf.dts.shift(); perf.cpu.shift(); }
+  if ((++perf.n % 30) !== 0) return;
+  let fps = 0, ft = 0;
+  if (perf.dts.length > 10){
+    ft = (perf.dts[perf.dts.length-1] - perf.dts[0]) / (perf.dts.length-1);
+    fps = 1000 / ft;
+  }
+  const cpu = perf.cpu.reduce((a,b)=>a+b,0) / Math.max(1, perf.cpu.length);
+  if (perf.n % 150 === 0) marchStats();
+  const C = CTX_REPORT;
+  const rect = canvas.getBoundingClientRect();
+  hudBox.textContent =
+    "fps " + fps.toFixed(1) + "   frame " + ft.toFixed(1) + "ms   cpu(js) " + cpu.toFixed(2) + "ms\n"
+    + "buffer " + canvas.width + "x" + canvas.height
+    + "   css " + rect.width.toFixed(1) + "x" + rect.height.toFixed(1)
+    + "   dpr " + devicePixelRatio + "   scale " + (canvas.width/rect.width).toFixed(2) + "\n"
+    + perf.march + "\n"
+    + C.renderer + "\n"
+    + "alpha:" + C.attributes.alpha + " aa:" + C.attributes.antialias
+    + " premul:" + C.attributes.premultipliedAlpha + " preserve:" + C.attributes.preserveDrawingBuffer
+    + " intMap:" + C.integerPixelMapping + " float:" + C.floatReadback
+    + " renderers:" + window.__organicRenderers;
+}
+
+/* ---------- float FBO helpers (probe + march stats) ---------- */
+function mkFloatTarget(w, h){
+  const tex = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, w, h, 0, gl.RGBA, gl.FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  const fb = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.activeTexture(gl.TEXTURE0);
+  return ok ? { fb, tex, w, h } : null;
+}
+let probeT = null, statsT = null;
+
+/* renders the CURRENT state into target at its resolution with raw output
+   for channel ch, then reads rect (x,y,w,h) as Float32Array. */
+function rawPass(target, ch, x, y, w, h){
+  const keepDebug = S.debug;
+  S.debug = ch; probeRawFlag = 1;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, target.fb);
+  gl.viewport(0, 0, target.w, target.h);
+  drawScene(target.w, target.h);
+  const buf = new Float32Array(w * h * 4);
+  gl.readPixels(x, y, w, h, gl.RGBA, gl.FLOAT, buf);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  S.debug = keepDebug; probeRawFlag = 0;
+  return buf;
+}
+
+/* 1 Hz march statistics at 128x72: ch 1 raw = (hit, frontSteps, exitSteps) */
+function marchStats(){
+  if (!extCBF) { perf.march = "march: n/a (no float readback)"; return; }
+  if (!statsT) statsT = mkFloatTarget(128, 72);
+  if (!statsT) { perf.march = "march: n/a (fbo incomplete)"; return; }
+  const b = rawPass(statsT, 1, 0, 0, 128, 72);
+  let hit=0, fAll=0, fHit=0, eHit=0, n=128*72;
+  for (let i=0; i<n; i++){
+    const a=b[i*4], fs=b[i*4+1], es=b[i*4+2];
+    fAll += fs;
+    if (a > 0.0){ hit++; fHit += fs; eHit += es; }
+  }
+  perf.march = "march: hit " + (100*hit/n).toFixed(1) + "%"
+    + "  front avg " + (fAll/n).toFixed(1)
+    + " (hit " + (hit? (fHit/hit).toFixed(1):"-") + ")"
+    + "  exit avg(hit) " + (hit? (eHit/hit).toFixed(1):"-");
+}
+
+/* ---------- pixel probe ---------- */
+const PROBE_CH = [
+  [ 1, "hit / frontSteps / exitSteps"],
+  [ 2, "tFront / chordL / tExit"],
+  [ 3, "residFront / residExit / minD"],
+  [ 9, "front normal xyz"],
+  [10, "exit normal xyz"],
+  [12, "refraction dir xyz"],
+  [11, "reflection dir xyz"],
+  [13, "TIRweight / fresnel / curvKap"],
+  [16, "env raw rgb"],
+  [17, "env filtered rgb"],
+  [18, "shellMask / coreMask / -"],
+  [20, "optical depth rgb"],
+  [21, "pre-tone-map linear rgb"],
+  [22, "invalidMask / - / -"],
+];
+document.getElementById("probe").addEventListener("change", e => {
+  probeOn = e.target.checked;
+  probeBox.style.display = probeOn ? "block" : "none";
+  if (probeOn){
+    probeBox.textContent = "PIXEL PROBE\nclick a pixel on the line artifact\n(freeze recommended; auto-enabled on click)";
+    if (!extCBF) probeBox.textContent += "\nWARNING: no EXT_color_buffer_float - probe unavailable";
+  }
+});
+function fmtV(v){
+  if (Number.isNaN(v)) return "  NaN  ";
+  if (!Number.isFinite(v)) return v>0 ? " +Inf  " : " -Inf  ";
+  const a = Math.abs(v);
+  if (a !== 0 && (a < 1e-3 || a >= 1e4)) return v.toExponential(1).padStart(7);
+  return v.toFixed(3).padStart(7);
+}
+function doProbe(ev){
+  if (!extCBF){ probeBox.textContent = "probe unavailable: EXT_color_buffer_float missing"; return; }
+  if (!freeze){ freeze = true; document.getElementById("freeze").checked = true; }
+  const rect = canvas.getBoundingClientRect();
+  const px = Math.round((ev.clientX - rect.left) * (canvas.width  / rect.width));
+  const py = Math.round(canvas.height - 1 - (ev.clientY - rect.top) * (canvas.height / rect.height));
+  const x0 = Math.max(0, Math.min(canvas.width  - 5, px - 2));
+  const y0 = Math.max(0, Math.min(canvas.height - 1, py));
+  if (!probeT || probeT.w !== canvas.width || probeT.h !== canvas.height){
+    probeT = mkFloatTarget(canvas.width, canvas.height);
+  }
+  if (!probeT){ probeBox.textContent = "probe fbo incomplete"; return; }
+  let out = "PROBE @ buffer px (" + px + "," + py + ")  cols x-2..x+2\n"
+          + "renderer: " + CTX_REPORT.renderer + "\n\n";
+  for (const [ch, label] of PROBE_CH){
+    const b = rawPass(probeT, ch, x0, y0, 5, 1);
+    out += label + "\n";
+    for (let c = 0; c < 3; c++){
+      let row = "  " + "rgb"[c] + " ";
+      for (let i = 0; i < 5; i++) row += fmtV(b[i*4 + c]) + (i===2 ? "|" : " ");
+      out += row + "\n";
+    }
+  }
+  drawScene();                       // restore the visible frame
+  probeBox.textContent = out;
+  console.log(out);
+  try { navigator.clipboard.writeText(out); } catch(e){}
+}
+
 requestAnimationFrame(frame);
 </script>
 </body>

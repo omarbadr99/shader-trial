@@ -824,6 +824,14 @@ void main(){
     t += d;
     if (t > camD + 2.6) break;
   }
+  /* Stall rescue (probe-diagnosed on Apple Metal): a ray whose 4-neighbours
+     hit can plateau at map()~0.01 under fast-math, never cross the 0.001
+     threshold, and exhaust all 170 steps -> rendered as background -> the
+     dotted/dashed hairlines. TRUE misses leave via the range break above in
+     ~30-60 steps (measured p99 = 43), so budget exhaustion while pinned near
+     the surface is unique to the stall. Shade such rays at their closest
+     approach; sub-pixel depth error, matches the neighbourhood. */
+  if (!hit && frontSteps > 169.5 && minD < 0.02){ hit = true; t = tAt; }
 
   /* background: flat color or a backdrop image; slight vignette + a soft
      shadow that pools below the object (key light comes from above) */

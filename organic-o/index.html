@@ -1248,11 +1248,33 @@ void main(){
   if (any(isnan(col)) || any(isinf(col))) col = bg;
 
   if (uTransp > 0.5){
-    /* premultiplied-alpha output for the browser compositor:
-       object -> (col*alpha, alpha); pooled shadow -> translucent black on
-       the uncovered remainder, so the O still grounds on any page bg */
-    float covA = alpha + (1.0 - alpha) * clamp(shad, 0.0, 1.0);
-    O = vec4(col * alpha, covA); return;
+    /* TRANSPARENT OUTPUT — unpremultiply against the known internal backdrop.
+       col is the finished opaque pixel: backdrop and object already blended
+       at coverage alpha, through the whole tonemap. Emitting col*alpha
+       would apply the backdrop twice (once inside col, once as the page
+       showing through 1-alpha) — that double-fade washes the soft edge out
+       and exaggerates any per-pixel coverage jitter into visible hairlines.
+       Emitting the raw surface instead swings the other way: at grazing
+       silhouettes the extrapolated surface color is ink-saturated, which
+       pooled into a blue halo. So subtract exactly the backdrop share the
+       page is about to supply: rgb = col - bgDisp*(1-alpha).
+         alpha=1 -> col (pixel-exact opaque object)
+         alpha=0 -> 0   (fully clear; the cast shadow lives in bgDisp, so it
+                         cancels here — no shadow is emitted)
+       Over a page matching the backdrop this reproduces the opaque render
+       exactly; over any other page it composites as true coverage. */
+    vec3 bgDisp;
+    if (uOptV1 > 0.5 && uIso != 12){
+      vec3 xe = max(toLin(bg), 0.0) * uExposure;
+      vec3 md = mix(clamp(xe, 0.0, 1.0), acesFit(xe), uRolloff);
+      bgDisp = toSRGB(md*(1.0 - uLift) + vec3(uLift));
+    } else if (uOptV1 > 0.5){
+      bgDisp = toSRGB(clamp(toLin(bg), 0.0, 1.0));
+    } else {
+      bgDisp = bg;                    // legacy path never tonemaps
+    }
+    O = vec4(clamp(col - bgDisp*(1.0 - alpha), 0.0, 1.0), clamp(alpha, 0.0, 1.0));
+    return;
   }
   O = vec4(col, 1.0);
 }`;

@@ -437,7 +437,9 @@
    GL setup
 ============================================================ */
 const canvas = document.getElementById("gl");
-const gl = canvas.getContext("webgl2", { antialias:false, alpha:false });
+/* alpha:true so embed mode can composite over the host page; the shader
+   writes a=1 everywhere in opaque mode, so the tool renders identically */
+const gl = canvas.getContext("webgl2", { antialias:false, alpha:true });
 if (!gl) document.body.innerHTML = "<p style='padding:2em'>WebGL2 required.</p>";
 
 const MAXB = 6;
@@ -487,6 +489,8 @@ uniform float uSoft;              // silhouette AA in pixels
 uniform float uJitter;            // per-frame dither for the volume integral
 uniform sampler2D uBgTex;         // backdrop image (see-through frost)
 uniform float uBgMode;            // 0 = flat color, 1 = texture
+uniform float uTransp;            // 1 = transparent output: alpha = O coverage + shadow;
+                                  // uBg still feeds the glass optics (refraction backdrop)
 uniform vec2  uTexScale;          // aspect-fit scale for the backdrop
 uniform vec2  uTexFlip;           // per-axis sign (y = -1 corrects GL flip)
 uniform float uTexZoom;           // backdrop scale
@@ -859,7 +863,8 @@ void main(){
   float vig = length(uv)*0.5;
   vec3 bg = bgBase * (1.0 - 0.04*vig*vig) * (1.0 + 0.008*uv.y);
   float below = smoothstep(0.15, -0.45, uv.y);
-  bg *= 1.0 - (0.018 + 0.05*below*uLight) * exp(-max(minD, 0.0)*2.2);
+  float shad = (0.018 + 0.05*below*uLight) * exp(-max(minD, 0.0)*2.2);
+  bg *= 1.0 - shad;
 
   float wpp = tAt * 1.24 / uRes.y;
   float aa  = uSoft * wpp;
@@ -1056,7 +1061,9 @@ void main(){
 
       { float cwM; inkOD(cOrig + cDir*(Lr*0.5), cwM); dCore = cwM; dShell = clamp(1.0-cwM, 0.0, 1.0); }
 
-      colL = mix(colL, surf, alpha);
+      /* transparent mode: keep the surface color unmixed at the AA edge and
+         let the output alpha do the blend — against the real page color */
+      colL = mix(colL, surf, uTransp > 0.5 ? 1.0 : alpha);
     }
     dPre = colL;
     if (uIso==12){
@@ -1172,7 +1179,7 @@ void main(){
     body += (sBroad*0.26 + sTight*0.34) * uGlare * coat
           * mix(vec3(1.0), 0.35 + 0.65*inkT, 0.6);
 
-    col = mix(bg, body, alpha);
+    col = mix(bg, body, uTransp > 0.5 ? 1.0 : alpha);
   }
   }
 
@@ -1236,6 +1243,13 @@ void main(){
      specks). Fall back to the local background so it is invisible. */
   if (any(isnan(col)) || any(isinf(col))) col = bg;
 
+  if (uTransp > 0.5){
+    /* premultiplied-alpha output for the browser compositor:
+       object -> (col*alpha, alpha); pooled shadow -> translucent black on
+       the uncovered remainder, so the O still grounds on any page bg */
+    float covA = alpha + (1.0 - alpha) * clamp(shad, 0.0, 1.0);
+    O = vec4(col * alpha, covA); return;
+  }
   O = vec4(col, 1.0);
 }`;
 
@@ -1261,7 +1275,7 @@ const U = {};
  "uSafe","uPressN","uPressB","uBlobN","uBlobA","uBlobAbs",
  "uOptV1","uExposure","uRolloff","uLift","uShellTh","uShellCl","uCoreSoft",
  "uFresStr","uF0","uReflStr","uStudioRot","uStripW","uStripSoft",
- "uCurvResp","uHiWidth","uHiInt","uIOR","uRefrStr","uDisp","uRefrFull","uDebug","uIso","uProbeRaw","uBoundR"]
+ "uCurvResp","uHiWidth","uHiInt","uIOR","uRefrStr","uDisp","uRefrFull","uDebug","uIso","uProbeRaw","uBoundR","uTransp"]
  .forEach(n => U[n] = gl.getUniformLocation(prog, n));
 
 /* ============================================================
@@ -1833,6 +1847,15 @@ const EMBED = Q.has("embed") || window.__ORGANIC_EMBED__ === true;
 let EMBED_INTERACT = Q.get("interactive") === "1";
 let EMBED_DPR = Math.max(0.5, Math.min(2, parseFloat(Q.get("dpr")) || 1)); // background: 1x by default (the O is soft; retina is wasted cost)
 let EMBED_PAUSED = false;                                                   // host can pause offscreen instances
+/* transparent output: no studio backdrop — the O (plus its soft shadow)
+   floats over whatever the host page draws behind the iframe */
+let TRANSPARENT = Q.get("transparent") === "1" || window.__ORGANIC_TRANSPARENT__ === true;
+function applyTransparentCSS(){
+  const v = TRANSPARENT ? "transparent" : "";
+  document.documentElement.style.background = v;
+  document.body.style.background = v;
+}
+if (TRANSPARENT) applyTransparentCSS();
 let extA = null, extB = null, extProgress = 0;
 
 function resolvePreset(v){
@@ -1868,6 +1891,7 @@ addEventListener("message", ev => {
   }
   if (typeof d.dpr === "number"){ EMBED_DPR = Math.max(0.5, Math.min(2, d.dpr)); resize(); }
   if (typeof d.paused === "boolean") EMBED_PAUSED = d.paused;   // stop drawing when offscreen
+  if (typeof d.transparent === "boolean"){ TRANSPARENT = d.transparent; applyTransparentCSS(); }
   /* diagnostics from the host (Framer A/B testing) */
   if (typeof d.freeze === "boolean"){
     freeze = d.freeze;
@@ -2086,6 +2110,7 @@ function drawScene(W, H){
   }
 
   gl.uniform2f(U.uRes, W, H);
+  gl.uniform1f(U.uTransp, TRANSPARENT ? 1 : 0);
   gl.uniform1f(U.uYaw,   drag.yaw + tiltYaw);
   gl.uniform1f(U.uPitch, drag.pitch + tiltPitch);
   gl.uniform1f(U.uSpinPhase, ph.spin);

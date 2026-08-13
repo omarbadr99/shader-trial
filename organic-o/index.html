@@ -444,10 +444,10 @@
    Visible badge (embed mode included) + console line on startup.
    Hide with ?badge=0, or postMessage {type:"organicO", badge:false}.
 ============================================================ */
-const BUILD_ID     = "SHADOW-FIX-01";
-const BUILD_COMMIT = "035ecaf";
-const BUILD_TIME   = "2026-08-13T18:38:04Z";
-const BUILD_SHA    = "4d396b0d2a57";   // sha256-12 of this file with
+const BUILD_ID     = "SCALE-DPR-02";
+const BUILD_COMMIT = "__BUILD_COMMIT__";
+const BUILD_TIME   = "__BUILD_TIME__";
+const BUILD_SHA    = "__BUILD_SHA__";   // sha256-12 of this file with
                                         // the stamps blanked: verifiable
                                         // without trusting git at all
 console.log(
@@ -1922,7 +1922,20 @@ const Q = new URLSearchParams(location.search);
    which has no URL to carry the query string */
 const EMBED = Q.has("embed") || window.__ORGANIC_EMBED__ === true;
 let EMBED_INTERACT = Q.get("interactive") === "1";
-let EMBED_DPR = Math.max(0.5, Math.min(2, parseFloat(Q.get("dpr")) || 1)); // background: 1x by default (the O is soft; retina is wasted cost)
+/* Render scale. 0 (or "auto") = match the screen, capped at 2. At 1x on a
+   retina display the browser upscales every rendered pixel 2x, which both
+   softens the O and widens any one-pixel feature — the inner-rim hairline
+   included — into something clearly visible. Native scale is the cure;
+   it costs fill rate, so it stays a dial. */
+const dprAuto = () => Math.max(0.5, Math.min(2, window.devicePixelRatio || 1));
+function dprFrom(v){
+  const n = parseFloat(v);
+  return (!isFinite(n) || n <= 0) ? dprAuto() : Math.max(0.5, Math.min(2, n));
+}
+let EMBED_DPR = Q.has("dpr") ? dprFrom(Q.get("dpr")) : 1;
+/* multiplies the preset's zoom, so the O can be sized to a container
+   without editing presets (apparent size scales with canvas HEIGHT) */
+let ZOOM_MUL = 1;
 let EMBED_PAUSED = false;                                                   // host can pause offscreen instances
 /* transparent output: no studio backdrop — the O (plus its soft shadow)
    floats over whatever the host page draws behind the iframe */
@@ -1993,7 +2006,10 @@ addEventListener("message", ev => {
     EMBED_INTERACT = d.interactive;
     canvas.style.pointerEvents = EMBED_INTERACT ? "auto" : "none";
   }
-  if (typeof d.dpr === "number"){ EMBED_DPR = Math.max(0.5, Math.min(2, d.dpr)); resize(); }
+  if (typeof d.dpr === "number"){ EMBED_DPR = dprFrom(d.dpr); resize(); }
+  if (typeof d.zoomMul === "number" && isFinite(d.zoomMul)){
+    ZOOM_MUL = Math.max(0.2, Math.min(5, d.zoomMul));
+  }
   if (typeof d.paused === "boolean") EMBED_PAUSED = d.paused;   // stop drawing when offscreen
   if (typeof d.transparent === "boolean"){ TRANSPARENT = d.transparent; applyTransparentCSS(); }
   if (typeof d.shadowKill === "boolean"){ SHADOW_KILL = d.shadowKill; applyShadowKillCSS(); }
@@ -2227,7 +2243,7 @@ function drawScene(W, H){
   gl.uniform1f(U.uPitch, drag.pitch + tiltPitch);
   gl.uniform1f(U.uSpinPhase, ph.spin);
   gl.uniform1f(U.uOrgPhase, ph.org);
-  gl.uniform1f(U.uZoom, S.zoom);   // strictly manual — never animated
+  gl.uniform1f(U.uZoom, S.zoom * ZOOM_MUL);   // strictly manual — never animated
   gl.uniform1f(U.uRing, S.ring);
   gl.uniform1f(U.uTube, S.tube);
   gl.uniform1f(U.uFlat, S.flat);

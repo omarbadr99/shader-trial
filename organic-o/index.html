@@ -1539,7 +1539,10 @@ function dialLerp(A, B, e){
     if (a == null || b == null) continue;
     S[d] = lerp(a, b, e);
   }
-  S.debug = 0; S.iso = 0;                       // no debug/isolation during a blend
+  // honor the diagnostic dropdowns even during a blend (default 0 = clean),
+  // so isolation/debug tests aren't silently canceled while a transition runs
+  S.debug = +document.getElementById("debug").value;
+  S.iso   = +document.getElementById("iso").value;
   S.optv1    = B.dials.optv1    ?? 1;
   S.refrfull = B.dials.refrfull ?? 1;
   /* rotate the camera between the two saved views (front <-> back facing).

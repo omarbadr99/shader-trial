@@ -1061,9 +1061,13 @@ void main(){
 
       { float cwM; inkOD(cOrig + cDir*(Lr*0.5), cwM); dCore = cwM; dShell = clamp(1.0-cwM, 0.0, 1.0); }
 
-      /* transparent mode: keep the surface color unmixed at the AA edge and
-         let the output alpha do the blend — against the real page color */
-      colL = mix(colL, surf, uTransp > 0.5 ? 1.0 : alpha);
+      /* NOTE: the soft-edge band is WIDE at grazing silhouettes (minD grows
+         quadratically off the surface), and grazing surf is saturated by ink
+         transmission. Composite it against the internal backdrop exactly as
+         opaque mode does — in transparent mode the result is then scaled by
+         coverage at the output, so the fringe stays the same pale color the
+         opaque render shows instead of a wide saturated halo. */
+      colL = mix(colL, surf, alpha);
     }
     dPre = colL;
     if (uIso==12){
@@ -1179,7 +1183,7 @@ void main(){
     body += (sBroad*0.26 + sTight*0.34) * uGlare * coat
           * mix(vec3(1.0), 0.35 + 0.65*inkT, 0.6);
 
-    col = mix(bg, body, uTransp > 0.5 ? 1.0 : alpha);
+    col = mix(bg, body, alpha);
   }
   }
 

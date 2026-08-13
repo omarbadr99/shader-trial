@@ -248,6 +248,7 @@
         <option value="20">Integrated optical density</option>
         <option value="21">Pre-tone-map color</option>
         <option value="22">Invalid-number mask</option>
+        <option value="23">Path-AA flagged pixels</option>
       </select></div>
 
     <div class="ctl"><label>Isolate (binary test)</label>
@@ -444,10 +445,10 @@
    Visible badge (embed mode included) + console line on startup.
    Hide with ?badge=0, or postMessage {type:"organicO", badge:false}.
 ============================================================ */
-const BUILD_ID     = "SCALE-DPR-02";
-const BUILD_COMMIT = "dda6331";
-const BUILD_TIME   = "2026-08-13T19:13:48Z";
-const BUILD_SHA    = "ba3ccaaae8ab";   // sha256-12 of this file with
+const BUILD_ID     = "NOSHADOW-1X-03";
+const BUILD_COMMIT = "__BUILD_COMMIT__";
+const BUILD_TIME   = "__BUILD_TIME__";
+const BUILD_SHA    = "__BUILD_SHA__";   // sha256-12 of this file with
                                         // the stamps blanked: verifiable
                                         // without trusting git at all
 console.log(
@@ -522,8 +523,8 @@ uniform sampler2D uBgTex;         // backdrop image (see-through frost)
 uniform float uBgMode;            // 0 = flat color, 1 = texture
 uniform float uTransp;            // 1 = transparent output: alpha = O coverage;
                                   // uBg still feeds the glass optics (refraction backdrop)
-uniform float uShadowKill;        // 1 = zero EVERY shader-side darkening outside the
-                                  // object: contact shadow, vignette, bg gradient
+uniform float uPathAA;            // 1 = local path-length AA at the flip boundary
+uniform vec2  uAAThr;             // x = near-tangency band, y = min chord remaining
 uniform float uAlphaDebug;        // 1 = render the emitted coverage alpha as grayscale
                                   // (black = 0, white = 1) instead of the material
 uniform vec2  uTexScale;          // aspect-fit scale for the backdrop
@@ -748,6 +749,24 @@ vec4 nrmCurv(vec3 p, float eps){
   return vec4(n, kappa);
 }
 
+/* Exit march factored out so the local path-length AA can re-run it for a
+   couple of sub-pixel ray directions. Identical arithmetic to the inline
+   primary march, minus the step bookkeeping. */
+float exitChord(vec3 orig, vec3 dir){
+  float ti = 0.012, tiPrev = 0.0;
+  for (int i=0; i<48; i++){
+    float dd = map(orig + dir*ti);
+    if (dd > 0.0015) break;
+    tiPrev = ti; ti += max(-dd/(uSafe*uFlat), 0.012);
+  }
+  float a2 = tiPrev, b2 = ti;
+  for (int j=0; j<6; j++){
+    float m2 = 0.5*(a2+b2);
+    if (map(orig + dir*m2) < 0.0) a2 = m2; else b2 = m2;
+  }
+  return 0.5*(a2+b2);
+}
+
 vec3 refrSafe(vec3 I, vec3 N, float eta){
   vec3 r = refract(I, N, eta);
   return dot(r, r) < 0.5 ? reflect(I, N) : r;   // total internal reflection
@@ -895,18 +914,15 @@ void main(){
   suv.y *= uTexFlip.y;
   suv += 0.5 + uTexOffset;
   vec3 bgBase = uBgMode > 0.5 ? texture(uBgTex, suv).rgb : uBg;
+  /* NO CONTACT SHADOW. The pooled shadow that used to darken the backdrop
+     under the object is gone permanently — not behind a toggle. The
+     vignette and vertical gradient are backdrop styling for the standalone
+     tool only; transparent output takes the backdrop perfectly flat, so
+     nothing outside the object's own coverage can darken the host page. */
   float vig = length(uv)*0.5;
-  /* SHADOW KILL: drop the vignette, the vertical gradient AND the contact
-     shadow, leaving a mathematically flat backdrop. Anything still darker
-     than flat outside the object is then provably not from this shader. */
-  vec3 bg = uShadowKill > 0.5
+  vec3 bg = uTransp > 0.5
           ? bgBase
           : bgBase * (1.0 - 0.04*vig*vig) * (1.0 + 0.008*uv.y);
-  float below = smoothstep(0.15, -0.45, uv.y);
-  float shad = uShadowKill > 0.5
-             ? 0.0
-             : (0.018 + 0.05*below*uLight) * exp(-max(minD, 0.0)*2.2);
-  bg *= 1.0 - shad;
 
   float wpp = tAt * 1.24 / uRes.y;
   float aa  = uSoft * wpp;
@@ -918,7 +934,7 @@ void main(){
 
   /* diagnostic capture vars (set inside the V1 branch) */
   float dFsteps=frontSteps, dFresid=0.0, dEsteps=0.0, dEresid=0.0, dL=0.0;
-  float dTIR=0.0, dF=0.0, dKap=0.0, dShell=0.0, dCore=0.0, dT0=0.0;
+  float dTIR=0.0, dF=0.0, dKap=0.0, dShell=0.0, dCore=0.0, dT0=0.0, dPathAA=0.0;
   vec3 dN=vec3(0.), dNEx=vec3(0.), dRefl=vec3(0.), dRefr=vec3(0.);
   vec3 dEnvRaw=vec3(0.), dEnvFilt=vec3(0.), dOD=vec3(0.), dPre=vec3(0.);
 
@@ -987,11 +1003,23 @@ void main(){
       vec3 pIn = p + rdIn*0.004;
 
       float Lr; vec3 cDir; vec3 cOrig; float eSteps=0.0;
+      float pathAA = 0.0;                       // 1 = this pixel took extra samples
       if (uRefrFull > 0.5 && uIso != 3){
+        /* Predictor for the path-length discontinuity, derived from the SDF
+           the march already evaluates — no derivatives, no extra taps.
+           Inside the glass dd is negative; a ray that passes TANGENTIALLY
+           close to the inner wall mid-chord (dd approaching 0 well before it
+           actually leaves) is one that a sub-pixel nudge can flip between
+           "exits here" and "carries on through the far wall". That flip is
+           the chord-length jump that draws the rim hairline. Rays merely
+           arriving at their exit also have dd -> 0, so the near-tangency
+           only counts when it happens with chord still left to travel. */
+        float ddMax = -1e9, tAtMax = 0.0;
         float ti = 0.012, tiPrev = 0.0;
         for (int i=0; i<48; i++){
           float dd = map(pIn + rdIn*ti); eSteps += 1.0;
           if (dd > 0.0015) break;
+          if (dd > ddMax){ ddMax = dd; tAtMax = ti; }
           tiPrev = ti; ti += max(-dd/(uSafe*uFlat), 0.012);
         }
         float a2 = tiPrev, b2 = ti;
@@ -1000,6 +1028,27 @@ void main(){
           if (map(pIn + rdIn*m2) < 0.0) a2 = m2; else b2 = m2;
         }
         Lr = 0.5*(a2+b2); cDir = rdIn; cOrig = pIn;
+
+        if (uPathAA > 0.5 && ddMax > -uAAThr.x && (Lr - tAtMax) > uAAThr.y){
+          /* Flagged: average the chord over the pixel footprint. Two extra
+             sub-pixel directions through the SAME entry point (the front
+             surface is smooth here — it is the EXIT that flips), so the cost
+             is two exit marches, not two full traversals. Averaging the
+             chord before the volume integral keeps that integral at one
+             pass, and turns the hard jump into a footprint-wide ramp. */
+          /* The neighbouring pixel's chord differs mainly because its ray
+             ENTERS the glass a pixel-footprint away along the surface, not
+             because its direction tilts by a fraction of a degree. So step
+             the entry point across the surface tangent plane by +/-0.35 of
+             the world-space pixel footprint and re-march from there. */
+          vec3 tx = normalize(cross(n, rd));
+          vec3 ty = cross(n, tx);
+          vec3 off = (tx + ty) * (0.35 * wppH);
+          float L1 = exitChord(p + off + rdIn*0.004, rdIn);
+          float L2 = exitChord(p - off + rdIn*0.004, rdIn);
+          Lr = (Lr + L1 + L2) / 3.0;
+          pathAA = 1.0;
+        }
       } else {
         float tEx2 = t0 + 0.004, tePrev = t0 + 0.004;
         for (int i=0; i<60; i++){
@@ -1014,7 +1063,7 @@ void main(){
         }
         Lr = 0.5*(a2+b2) - t0; cDir = rd; cOrig = ro + rd*t0;
       }
-      dEsteps = eSteps; dL = Lr;
+      dEsteps = eSteps; dL = Lr; dPathAA = pathAA;
 
       vec3 od = vec3(0.0);
       float shellT = 0.0;
@@ -1287,6 +1336,7 @@ void main(){
     else if (uDebug==19) dc = vec3(dCore);
     else if (uDebug==20) dc = clamp(dOD*0.3, 0.0, 1.0);
     else if (uDebug==21) dc = toSRGB(clamp(dPre, 0.0, 1.0));
+    else if (uDebug==23) dc = vec3(dPathAA, alpha*0.35, 0.0);  // red = extra samples
     O = vec4(dc, 1.0); return;
   }
 
@@ -1352,7 +1402,7 @@ const U = {};
  "uOptV1","uExposure","uRolloff","uLift","uShellTh","uShellCl","uCoreSoft",
  "uFresStr","uF0","uReflStr","uStudioRot","uStripW","uStripSoft",
  "uCurvResp","uHiWidth","uHiInt","uIOR","uRefrStr","uDisp","uRefrFull","uDebug","uIso","uProbeRaw","uBoundR",
- "uTransp","uShadowKill","uAlphaDebug"]
+ "uTransp","uAlphaDebug","uPathAA","uAAThr"]
  .forEach(n => U[n] = gl.getUniformLocation(prog, n));
 
 /* ============================================================
@@ -1927,15 +1977,24 @@ let EMBED_INTERACT = Q.get("interactive") === "1";
    softens the O and widens any one-pixel feature — the inner-rim hairline
    included — into something clearly visible. Native scale is the cure;
    it costs fill rate, so it stays a dial. */
-const dprAuto = () => Math.max(0.5, Math.min(2, window.devicePixelRatio || 1));
+/* dpr is LITERAL: 1 means canvas buffer == CSS size, one shader pixel per
+   CSS pixel, regardless of devicePixelRatio. Only an explicit "auto" asks
+   for the display's own scale (development / high-quality use). */
 function dprFrom(v){
+  if (v === "auto") return Math.max(0.5, Math.min(2, window.devicePixelRatio || 1));
   const n = parseFloat(v);
-  return (!isFinite(n) || n <= 0) ? dprAuto() : Math.max(0.5, Math.min(2, n));
+  return !isFinite(n) || n <= 0 ? 1 : Math.max(0.5, Math.min(2, n));
 }
 let EMBED_DPR = Q.has("dpr") ? dprFrom(Q.get("dpr")) : 1;
 /* multiplies the preset's zoom, so the O can be sized to a container
    without editing presets (apparent size scales with canvas HEIGHT) */
 let ZOOM_MUL = 1;
+/* Local path-length AA: OFF. The predictor lands on a band through the
+   middle of the tube rather than on the rim line, and enabling it moved
+   17 pixels by 1/255 — a no-op that still costs two extra exit marches
+   on every flagged pixel. Kept behind ?pathaa=1 for further work. */
+let PATH_AA = Q.get("pathaa") === "1";
+let AA_THR = [0.002, 0.12];
 let EMBED_PAUSED = false;                                                   // host can pause offscreen instances
 /* transparent output: no studio backdrop — the O (plus its soft shadow)
    floats over whatever the host page draws behind the iframe */
@@ -2006,7 +2065,9 @@ addEventListener("message", ev => {
     EMBED_INTERACT = d.interactive;
     canvas.style.pointerEvents = EMBED_INTERACT ? "auto" : "none";
   }
-  if (typeof d.dpr === "number"){ EMBED_DPR = dprFrom(d.dpr); resize(); }
+  if (typeof d.dpr === "number" || d.dpr === "auto"){ EMBED_DPR = dprFrom(d.dpr); resize(); }
+  if (typeof d.pathAA === "boolean") PATH_AA = d.pathAA;
+  if (Array.isArray(d.aaThr) && d.aaThr.length === 2) AA_THR = d.aaThr.map(Number);
   if (typeof d.zoomMul === "number" && isFinite(d.zoomMul)){
     ZOOM_MUL = Math.max(0.2, Math.min(5, d.zoomMul));
   }
@@ -2237,8 +2298,9 @@ function drawScene(W, H){
 
   gl.uniform2f(U.uRes, W, H);
   gl.uniform1f(U.uTransp, TRANSPARENT ? 1 : 0);
-  gl.uniform1f(U.uShadowKill, SHADOW_KILL ? 1 : 0);
   gl.uniform1f(U.uAlphaDebug, ALPHA_DEBUG ? 1 : 0);
+  gl.uniform1f(U.uPathAA, PATH_AA ? 1 : 0);
+  gl.uniform2f(U.uAAThr, AA_THR[0], AA_THR[1]);
   gl.uniform1f(U.uYaw,   drag.yaw + tiltYaw);
   gl.uniform1f(U.uPitch, drag.pitch + tiltPitch);
   gl.uniform1f(U.uSpinPhase, ph.spin);

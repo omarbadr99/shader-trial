@@ -262,7 +262,10 @@
         <option value="34">Proof 3 · late verified</option>
         <option value="35">Front T continuity</option>
         <option value="36">Surface residual ERROR</option>
-        <option value="37">Invalid Exit Bracket ERROR</option>
+        <option value="37">Exit bracket ERROR</option>
+        <option value="38">Exit residual ERROR</option>
+        <option value="39">Exit proof class</option>
+        <option value="40">Exit T continuity</option>
       </select></div>
 
     <div class="ctl"><label>Isolate (binary test)</label>
@@ -459,8 +462,8 @@
    Visible badge (embed mode included) + console line on startup.
    Hide with ?badge=0, or postMessage {type:"organicO", badge:false}.
 ============================================================ */
-const BUILD_ID     = "PROOF-11";
-const BUILD_COMMIT = "a236441";
+const BUILD_ID     = "EXIT-12";
+const BUILD_COMMIT = "__BUILD_COMMIT__";
 const BUILD_TIME   = "2026-08-14T18:51:36Z";
 const BUILD_SHA    = "06edc558301a";   // sha256-12 of this file with
                                         // the stamps blanked: verifiable
@@ -912,22 +915,62 @@ vec4 nrmCurv(vec3 p, float eps){
   return vec4(n, kappa);
 }
 
-/* Exit march factored out so the local path-length AA can re-run it for a
-   couple of sub-pixel ray directions. Identical arithmetic to the inline
-   primary march, minus the step bookkeeping. */
-float exitChord(vec3 orig, vec3 dir){
-  float ti = 0.012, tiPrev = 0.0;
-  for (int i=0; i<48; i++){
-    float dd = map(orig + dir*ti);
-    if (dd > 0.0015) break;
-    tiPrev = ti; ti += max(-dd/(uSafe*uFlat), 0.012);
+/* THE ONLY EXIT IMPLEMENTATION. Every caller — refraction, speck repair,
+   path AA, diagnostics — goes through this.
+   valid == true requires an ADJACENT pair of samples with fPrev <= 0 and
+   fCur > 0. "We were inside earlier and are outside now" is not a bracket:
+   a sample at +0.0008 is already outside yet sits below any positive break
+   threshold, so it can become the lower endpoint and the bisection then runs
+   on an outside->outside interval while still reporting success. Step with
+   the conservative distance, decide on fieldRaw's sign. */
+struct EX {
+  bool  valid;
+  float t;        // exit distance from orig along dir
+  float steps;
+  float resid;    // |fieldRaw| at the refined exit
+  float proof;    // 0 none, 1 marched crossing, 2 local-scan crossing
+};
+
+float refineExit(vec3 o, vec3 d, float a, float b){   // a inside, b outside
+  for (int j=0; j<10; j++){
+    float m = 0.5*(a+b);
+    if (fieldRaw(o + d*m) <= 0.0) a = m; else b = m;
   }
-  float a2 = tiPrev, b2 = ti;
-  for (int j=0; j<6; j++){
-    float m2 = 0.5*(a2+b2);
-    if (map(orig + dir*m2) < 0.0) a2 = m2; else b2 = m2;
+  return 0.5*(a+b);
+}
+
+EX traceExit(vec3 orig, vec3 dir, float tMax){
+  EX e; e.valid=false; e.t=0.0; e.steps=0.0; e.resid=0.0; e.proof=0.0;
+  float tPrev = 0.0, fPrev = fieldRaw(orig);
+  float t = 0.012;
+  for (int i=0; i<64; i++){
+    e.steps += 1.0;
+    float f = fieldRaw(orig + dir*t);
+    if (fPrev <= 0.0 && f > 0.0){                   // PROVEN adjacent crossing
+      e.t = refineExit(orig, dir, tPrev, t);
+      e.valid = true; e.proof = 1.0;
+      e.resid = abs(fieldRaw(orig + dir*e.t));
+      return e;
+    }
+    tPrev = t; fPrev = f;
+    t += f <= 0.0 ? max(-f, 0.012) : 0.012;         // conservative advance
+    if (t > tMax) break;
   }
-  return 0.5*(a2+b2);
+  /* No bracket from marching: scan deterministically rather than inventing
+     one. Still requires an adjacent inside->outside pair. */
+  float sPrev = 0.0, gPrev = fieldRaw(orig);
+  for (int k=1; k<=24; k++){
+    float sc = tMax * float(k) / 24.0;
+    float g = fieldRaw(orig + dir*sc);
+    if (gPrev <= 0.0 && g > 0.0){
+      e.t = refineExit(orig, dir, sPrev, sc);
+      e.valid = true; e.proof = 2.0;
+      e.resid = abs(fieldRaw(orig + dir*e.t));
+      return e;
+    }
+    sPrev = sc; gPrev = g;
+  }
+  return e;                                          // valid = false, no chord
 }
 
 vec3 refrSafe(vec3 I, vec3 N, float eta){
@@ -1136,7 +1179,7 @@ void main(){
   /* diagnostic capture vars (set inside the V1 branch) */
   float dFsteps=frontSteps, dFresid=0.0, dEsteps=0.0, dEresid=0.0, dL=0.0;
   float dTIR=0.0, dF=0.0, dKap=0.0, dShell=0.0, dCore=0.0, dT0=0.0, dPathAA=0.0;
-  float exitValid=1.0;
+  float exitValid=1.0, exitProof=0.0, exitResid=0.0;
   vec3 dN=vec3(0.), dNEx=vec3(0.), dRefl=vec3(0.), dRefr=vec3(0.);
   vec3 dEnvRaw=vec3(0.), dEnvFilt=vec3(0.), dOD=vec3(0.), dPre=vec3(0.);
 
@@ -1207,26 +1250,13 @@ void main(){
       float Lr; vec3 cDir; vec3 cOrig; float eSteps=0.0;
       float pathAA = 0.0;                       // 1 = this pixel took extra samples
       if (uRefrFull > 0.5 && uIso != 3){
-        /* The exit needs a PROVEN inside->outside bracket, exactly as the
-           front tracer needs a proven outside->inside one. Record whether we
-           ever actually sampled inside, and whether the loop terminated by
-           leaving rather than by running out of iterations; bisecting an
-           unverified interval is how a chord can come back meaningless. */
-        float ti = 0.012, tiPrev = 0.0;
-        bool wasInside = false, leftVolume = false;
-        for (int i=0; i<48; i++){
-          float dd = map(pIn + rdIn*ti); eSteps += 1.0;
-          if (dd > 0.0015){ leftVolume = true; break; }
-          if (dd <= 0.0) wasInside = true;
-          tiPrev = ti; ti += max(-dd/(uSafe*uFlat), 0.012);
-        }
-        exitValid = (wasInside && leftVolume) ? 1.0 : 0.0;
-        float a2 = tiPrev, b2 = ti;
-        for (int j2i=0; j2i<6; j2i++){
-          float m2 = 0.5*(a2+b2);
-          if (map(pIn + rdIn*m2) < 0.0) a2 = m2; else b2 = m2;
-        }
-        Lr = 0.5*(a2+b2); cDir = rdIn; cOrig = pIn;
+        EX ex = traceExit(pIn, rdIn, 6.0);
+        eSteps = ex.steps;
+        exitValid = ex.valid ? 1.0 : 0.0;
+        exitProof = ex.proof;
+        exitResid = ex.resid;
+        Lr = ex.valid ? ex.t : 0.0;      // no fabricated chord
+        cDir = rdIn; cOrig = pIn;
         /* test-only: reproduce the collapse SwiftShader will not produce */
         if (uForceSpeck > 0.5 && mod(floor(gl_FragCoord.x) + floor(gl_FragCoord.y), 23.0) < 1.0) Lr = 0.0;
 
@@ -1257,8 +1287,8 @@ void main(){
           vec3 sx = normalize(cross(n, rd));
           vec3 sy = cross(n, sx);
           vec3 so = (sx + sy) * (0.7 * wppH);
-          float Sa = exitChord(p + so + rdIn*0.004, rdIn);
-          float Sb = exitChord(p - so + rdIn*0.004, rdIn);
+          EX sA = traceExit(p + so + rdIn*0.004, rdIn, 6.0); float Sa = sA.valid ? sA.t : 0.0;
+          EX sB = traceExit(p - so + rdIn*0.004, rdIn, 6.0); float Sb = sB.valid ? sB.t : 0.0;
           float rep = max(Sa, Sb);
           if (rep > 0.02){ Lr = rep; pathAA = 1.0; }
         }
@@ -1273,26 +1303,22 @@ void main(){
           vec3 tx = normalize(cross(n, rd));
           vec3 ty = cross(n, tx);
           vec3 offA = (tx + ty) * (0.5 * wppH);
-          float La = exitChord(p + offA + rdIn*0.004, rdIn);
-          float Lb = exitChord(p - offA + rdIn*0.004, rdIn);
+          EX eA = traceExit(p + offA + rdIn*0.004, rdIn, 6.0); float La = eA.valid ? eA.t : Lr;
+          EX eB = traceExit(p - offA + rdIn*0.004, rdIn, 6.0); float Lb = eB.valid ? eB.t : Lr;
           float dis = max(abs(La - Lr), abs(Lb - Lr));
           float w = smoothstep(uAAThr.x, uAAThr.y, dis);
           Lr = mix(Lr, (Lr + La + Lb) / 3.0, w);
           pathAA = w;
         }
       } else {
-        float tEx2 = t0 + 0.004, tePrev = t0 + 0.004;
-        for (int i=0; i<60; i++){
-          float dd = map(ro + rd*tEx2); eSteps += 1.0;
-          if (dd > 0.0015) break;
-          tePrev = tEx2; tEx2 += max(-dd/(uSafe*uFlat), 0.012);
-        }
-        float a2 = tePrev, b2 = tEx2;
-        for (int j2i=0; j2i<6; j2i++){
-          float m2 = 0.5*(a2+b2);
-          if (map(ro + rd*m2) < 0.0) a2 = m2; else b2 = m2;
-        }
-        Lr = 0.5*(a2+b2) - t0; cDir = rd; cOrig = ro + rd*t0;
+        vec3 lo2 = ro + rd*(t0 + 0.004);
+        EX ex2 = traceExit(lo2, rd, 6.0);
+        eSteps = ex2.steps;
+        exitValid = ex2.valid ? 1.0 : 0.0;
+        exitProof = ex2.proof;
+        exitResid = ex2.resid;
+        Lr = ex2.valid ? ex2.t : 0.0;
+        cDir = rd; cOrig = lo2;
       }
       dEsteps = eSteps; dL = Lr; dPathAA = pathAA;
 
@@ -1593,10 +1619,23 @@ void main(){
        Uses the old scaled criterion so the comparison is like for like. */
     else if (uDebug==28) dc = (!fr.hit && frontSteps > 383.5 && minD*uSafe*uFlat < 0.05)
                             ? vec3(1.0, 0.0, 1.0) : vec3(0.0, alpha*0.25, 0.0);
-    /* 37: invalid exit bracket — magenta where the exit march never proved
-       an inside->outside crossing, so its chord is not trustworthy. */
+    /* 37: exit bracket ERROR — magenta where no adjacent inside->outside
+       pair was ever observed, so no chord may be produced. Must be black. */
     else if (uDebug==37) dc = (alpha > 0.0 && exitValid < 0.5) ? vec3(1.0,0.0,1.0)
                             : vec3(0.0, alpha*0.25, 0.0);
+    /* 38: exit residual ERROR — the refined exit does not satisfy the surface
+       equation to tolerance. Must be black. */
+    else if (uDebug==38) dc = (alpha > 0.0 && exitValid > 0.5 && exitResid > 0.0015)
+                            ? vec3(1.0,0.0,1.0) : vec3(0.0, alpha*0.25, 0.0);
+    /* 39: exit proof class — green marched crossing, yellow local-scan
+       crossing, magenta unresolved, black where no exit was requested. */
+    else if (uDebug==39) dc = alpha <= 0.0 ? vec3(0.0)
+                            : (exitValid < 0.5 ? vec3(1.0,0.0,1.0)
+                            : (exitProof > 1.5 ? vec3(1.0,1.0,0.0) : vec3(0.0,1.0,0.0)));
+    /* 40: exit T continuity — the refined chord on a narrow local range.
+       A continuous front T with a broken exit T localises the fault. */
+    else if (uDebug==40) dc = alpha <= 0.0 ? vec3(0.0,0.0,0.25)
+                            : vec3(clamp(dL / 1.2, 0.0, 1.0));
     else if (uDebug==24) dc = hit && missReason < 0.5 ? vec3(0.10, 0.15, 0.55)
                             : (missReason > 1.5 ? vec3(0.0, 0.9, 0.0) : vec3(0.95, 0.0, 0.0));
     O = vec4(dc, 1.0); return;
@@ -2283,23 +2322,51 @@ function grabRawFrame(){
   const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
   const px = new Uint8Array(w*h*4);
   gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  /* FNV-1a over the exact bytes, so the exported file can be tied to this
+     capture with certainty */
+  let hash = 0x811c9dc5 >>> 0;
+  for (let i = 0; i < px.length; i++){
+    hash ^= px[i]; hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  const hex = hash.toString(16).padStart(8, "0");
   const c = document.createElement("canvas"); c.width = w; c.height = h;
-  const img = c.getContext("2d").createImageData(w, h);
+  const ctx = c.getContext("2d");
+  const img = ctx.createImageData(w, h);
   for (let y=0; y<h; y++){                       // GL origin is bottom-left
     const src = (h-1-y)*w*4, dst = y*w*4;
     img.data.set(px.subarray(src, src + w*4), dst);
   }
-  c.getContext("2d").putImageData(img, 0, 0);
+  ctx.putImageData(img, 0, 0);
+
+  /* The PNG is the proof, not the overlay: the overlay is drawn INSIDE this
+     iframe, so it still passes through the iframe CSS, any Framer ancestor
+     transform and the browser compositor. Only a file opened separately is
+     free of all of that. */
+  c.toBlob((blob) => {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "organic-o-raw-" + BUILD_ID + "-" + w + "x" + h + "-" + hex + ".png";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }, "image/png");
+
+  console.log("RAW CAPTURE  drawingBuffer " + w + "x" + h +
+              "  png " + w + "x" + h + "  fnv1a " + hex +
+              "  (download blocked inside sandboxed viewers; works on a normal page)");
+
   removeRawOverlay();
   rawOverlay = document.createElement("div");
   rawOverlay.style.cssText =
     "position:fixed;inset:0;z-index:2147483647;background:#000;overflow:auto;";
   c.style.cssText = "display:block;image-rendering:pixelated;transform-origin:0 0;";
   const cap = document.createElement("div");
-  cap.textContent = "RAW DRAWING BUFFER " + w + "x" + h +
-                    " · 1:1 device pixels, no CSS scaling · send {rawCapture:false} to close";
-  cap.style.cssText = "position:sticky;top:0;left:0;background:#0a7;color:#fff;"
-    + "font:11px ui-monospace,Menlo,monospace;padding:4px 8px;";
+  cap.textContent = "RAW DRAWING BUFFER " + w + "x" + h + " · fnv1a " + hex
+    + " · PNG downloaded — judge from the FILE, not this overlay (it is still"
+    + " composited by the iframe/Framer) · send {rawCapture:false} to close";
+  cap.style.cssText = "position:sticky;top:0;left:0;background:#b4004e;color:#fff;"
+    + "font:11px ui-monospace,Menlo,monospace;padding:4px 8px;white-space:pre-wrap;";
   rawOverlay.appendChild(cap); rawOverlay.appendChild(c);
   document.body.appendChild(rawOverlay);
 }

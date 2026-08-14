@@ -445,10 +445,10 @@
    Visible badge (embed mode included) + console line on startup.
    Hide with ?badge=0, or postMessage {type:"organicO", badge:false}.
 ============================================================ */
-const BUILD_ID     = "DRAGFIX-06";
-const BUILD_COMMIT = "f327c97";
-const BUILD_TIME   = "2026-08-14T10:18:57Z";
-const BUILD_SHA    = "d873111e149d";   // sha256-12 of this file with
+const BUILD_ID     = "HASH-DIAG-07";
+const BUILD_COMMIT = "__BUILD_COMMIT__";
+const BUILD_TIME   = "__BUILD_TIME__";
+const BUILD_SHA    = "__BUILD_SHA__";   // sha256-12 of this file with
                                         // the stamps blanked: verifiable
                                         // without trusting git at all
 console.log(
@@ -661,14 +661,21 @@ vec3 calcNormal(vec3 p){
    hairlines across the tube. */
 bool inv1(float v){ return isnan(v) || isinf(v); }
 bool inv3(vec3 v){ return any(isnan(v)) || any(isinf(v)); }
+/* Screen-space dither hash. Built on the INTEGER pixel lattice plus an
+   integer frame seed and mixed PCG3D-style. The previous form hashed the
+   float bits of gl_FragCoord + a float jitter; at large coordinates those
+   bit patterns differ only in low mantissa bits, and a driver that is loose
+   about integer precision can leave neighbouring pixels correlated — which
+   surfaces as regular dotted diagonal tracks in the volume-integral dither.
+   Integer coordinates remove that failure mode entirely. */
+uniform uint uSeedU;
 float hash(vec2 p){
-  uvec2 v = floatBitsToUint(p);
+  uvec3 v = uvec3(uvec2(abs(p)), uSeedU);
   v = v*1664525u + 1013904223u;
-  v.x += v.y*1664525u; v.y += v.x*1664525u;
+  v.x += v.y*v.z; v.y += v.z*v.x; v.z += v.x*v.y;
   v ^= v >> 16u;
-  v.x += v.y*1664525u; v.y += v.x*1664525u;
-  v ^= v >> 16u;
-  return float(v.x ^ v.y) * 2.3283064365386963e-10;
+  v.x += v.y*v.z; v.y += v.z*v.x; v.z += v.x*v.y;
+  return float(v.x) * 2.3283064365386963e-10;
 }
 float hash3(vec3 p){
   uvec3 v = floatBitsToUint(p);
@@ -1093,7 +1100,7 @@ void main(){
       {
         const int NS = 22;
         float st = Lr/float(NS);
-        float j = noJ * hash(gl_FragCoord.xy + vec2(uJitter, uJitter*1.7));
+        float j = noJ * hash(gl_FragCoord.xy);
         for (int i=0; i<NS; i++){
           vec3 q2 = cOrig + cDir*((float(i)+j)*st);
           float cw;
@@ -1127,7 +1134,7 @@ void main(){
       if (uBgMode > 0.5){
         vec2 duv = (rdOut.xy - rd.xy) * 0.35 * uTexScale;
         float blurR = 0.003 + 0.04*milk;
-        float j2 = noJ * hash(gl_FragCoord.yx + uJitter);
+        float j2 = noJ * hash(gl_FragCoord.yx);
         vec3 acc = vec3(0.0);
         for (int i=0; i<8; i++){
           float an = (float(i) + j2)*0.7854;
@@ -1213,7 +1220,7 @@ void main(){
     {
       const int NS = 22;
       float st = L/float(NS);
-      float j = hash(gl_FragCoord.xy + vec2(uJitter, uJitter*1.7));
+      float j = hash(gl_FragCoord.xy);
       for (int i=0; i<NS; i++){
         float depth = (float(i)+j)*st;
         vec3 q = ro + rd*(t0 + depth);
@@ -1243,7 +1250,7 @@ void main(){
     if (uBgMode > 0.5){
       vec2 refr  = n.xy * (0.02 + 0.10*L) * uTexScale;
       float blurR = 0.003 + 0.05*milk;
-      float j2 = hash(gl_FragCoord.yx + uJitter);
+      float j2 = hash(gl_FragCoord.yx);
       vec3 acc = vec3(0.0);
       for (int i=0; i<8; i++){
         float an = (float(i) + j2)*0.7854;
@@ -1425,7 +1432,7 @@ const U = {};
  "uOptV1","uExposure","uRolloff","uLift","uShellTh","uShellCl","uCoreSoft",
  "uFresStr","uF0","uReflStr","uStudioRot","uStripW","uStripSoft",
  "uCurvResp","uHiWidth","uHiInt","uIOR","uRefrStr","uDisp","uRefrFull","uDebug","uIso","uProbeRaw","uBoundR",
- "uTransp","uAlphaDebug","uPathAA","uAAThr","uSpeckFix","uForceSpeck"]
+ "uTransp","uAlphaDebug","uPathAA","uAAThr","uSpeckFix","uForceSpeck","uSeedU"]
  .forEach(n => U[n] = gl.getUniformLocation(prog, n));
 
 /* ============================================================
@@ -2035,6 +2042,10 @@ let ZOOM_MUL = 1;
 let PATH_AA = Q.get("pathaa") === "1";
 let SPECK_FIX = Q.get("speckfix") !== "0";   // collapsed-chord repair, on
 let FORCE_SPECK = Q.get("forcespeck") === "1"; // test: inject the failure
+/* diagnostics reachable without the panel: ?iso=11 kills all hash/jitter/noise,
+   ?debug=22 flags invalid numbers, ?debug=8 shows the chord length */
+let FORCE_DEBUG = Q.has("debug") ? parseInt(Q.get("debug"), 10) : null;
+let FORCE_ISO   = Q.has("iso")   ? parseInt(Q.get("iso"),   10) : null;
 let AA_THR = [0.01, 0.08];  // smoothstep band over chord disagreement
 let EMBED_PAUSED = false;                                                   // host can pause offscreen instances
 /* transparent output: no studio backdrop — the O (plus its soft shadow)
@@ -2109,6 +2120,8 @@ addEventListener("message", ev => {
   if (typeof d.dpr === "number" || d.dpr === "auto"){ EMBED_DPR = dprFrom(d.dpr); resize(); }
   if (typeof d.pathAA === "boolean") PATH_AA = d.pathAA;
   if (typeof d.speckFix === "boolean") SPECK_FIX = d.speckFix;
+  if (typeof d.debugView === "number") FORCE_DEBUG = d.debugView;
+  if (typeof d.isolate === "number") FORCE_ISO = d.isolate;
   if (typeof d.forceSpeck === "boolean") FORCE_SPECK = d.forceSpeck;
   if (Array.isArray(d.aaThr) && d.aaThr.length === 2) AA_THR = d.aaThr.map(Number);
   if (typeof d.zoomMul === "number" && isFinite(d.zoomMul)){
@@ -2340,9 +2353,12 @@ function drawScene(W, H){
   }
 
   gl.uniform2f(U.uRes, W, H);
+  if (FORCE_DEBUG !== null && !isNaN(FORCE_DEBUG)) S.debug = FORCE_DEBUG;
+  if (FORCE_ISO   !== null && !isNaN(FORCE_ISO))   S.iso   = FORCE_ISO;
   gl.uniform1f(U.uTransp, TRANSPARENT ? 1 : 0);
   gl.uniform1f(U.uAlphaDebug, ALPHA_DEBUG ? 1 : 0);
   gl.uniform1f(U.uPathAA, PATH_AA ? 1 : 0);
+  gl.uniform1ui(U.uSeedU, (frameN >>> 0));
   gl.uniform1f(U.uSpeckFix, SPECK_FIX ? 1 : 0);
   gl.uniform1f(U.uForceSpeck, FORCE_SPECK ? 1 : 0);
   gl.uniform2f(U.uAAThr, AA_THR[0], AA_THR[1]);

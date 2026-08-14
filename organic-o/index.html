@@ -445,10 +445,10 @@
    Visible badge (embed mode included) + console line on startup.
    Hide with ?badge=0, or postMessage {type:"organicO", badge:false}.
 ============================================================ */
-const BUILD_ID     = "PRESETFIX-04";
-const BUILD_COMMIT = "134d326";
-const BUILD_TIME   = "2026-08-13T20:27:54Z";
-const BUILD_SHA    = "7585bc6b2025";   // sha256-12 of this file with
+const BUILD_ID     = "SPECKFIX-05";
+const BUILD_COMMIT = "__BUILD_COMMIT__";
+const BUILD_TIME   = "__BUILD_TIME__";
+const BUILD_SHA    = "__BUILD_SHA__";   // sha256-12 of this file with
                                         // the stamps blanked: verifiable
                                         // without trusting git at all
 console.log(
@@ -523,6 +523,8 @@ uniform sampler2D uBgTex;         // backdrop image (see-through frost)
 uniform float uBgMode;            // 0 = flat color, 1 = texture
 uniform float uTransp;            // 1 = transparent output: alpha = O coverage;
                                   // uBg still feeds the glass optics (refraction backdrop)
+uniform float uSpeckFix;          // 1 = repair collapsed-chord white specks
+uniform float uForceSpeck;        // test-only: inject the collapse
 uniform float uPathAA;            // 1 = local path-length AA at the flip boundary
 uniform vec2  uAAThr;             // smoothstep band over chord disagreement
 uniform float uAlphaDebug;        // 1 = render the emitted coverage alpha as grayscale
@@ -1017,6 +1019,8 @@ void main(){
           if (map(pIn + rdIn*m2) < 0.0) a2 = m2; else b2 = m2;
         }
         Lr = 0.5*(a2+b2); cDir = rdIn; cOrig = pIn;
+        /* test-only: reproduce the collapse SwiftShader will not produce */
+        if (uForceSpeck > 0.5 && mod(floor(gl_FragCoord.x) + floor(gl_FragCoord.y), 23.0) < 1.0) Lr = 0.0;
 
         /* DETECTION BY DISAGREEMENT, not by prediction. The earlier analytic
            predictor (near-tangency mid-chord) flagged a band through the
@@ -1028,6 +1032,29 @@ void main(){
            opposite neighbour too and average all three, which replaces the
            hard step with a footprint-wide ramp. Agreement (the common case)
            costs one extra exit march and nothing else. */
+        /* SPECK REPAIR — the dotted white pixels.
+           If the refracted ray registers as leaving the glass immediately,
+           the chord collapses to ~0, the volume integral absorbs no ink, and
+           the pixel renders as bare white glass: a single bright speck on a
+           dark blue neighbourhood. It happens where the SDF is ill-conditioned
+           (the medial-axis skeleton), which is a CURVE, so the specks land in
+           curved/diagonal tracks. Whether a given pixel tips over depends on
+           float precision, so it shows on Apple Metal and never under
+           SwiftShader — which is why every local capture looked clean.
+           Repair, do not hide: re-march from half a pixel either side along
+           the surface and adopt a neighbour's plausible chord. Costs two
+           extra marches on the affected pixels only; every other pixel is
+           bit-identical. Disable with ?speckfix=0 to A/B on real hardware. */
+        if (uSpeckFix > 0.5 && Lr < 0.02){
+          vec3 sx = normalize(cross(n, rd));
+          vec3 sy = cross(n, sx);
+          vec3 so = (sx + sy) * (0.7 * wppH);
+          float Sa = exitChord(p + so + rdIn*0.004, rdIn);
+          float Sb = exitChord(p - so + rdIn*0.004, rdIn);
+          float rep = max(Sa, Sb);
+          if (rep > 0.02){ Lr = rep; pathAA = 1.0; }
+        }
+
         if (uPathAA > 0.5){
           /* Both neighbours are marched unconditionally and the blend weight
              is CONTINUOUS in the disagreement. A binary "average only if the
@@ -1398,7 +1425,7 @@ const U = {};
  "uOptV1","uExposure","uRolloff","uLift","uShellTh","uShellCl","uCoreSoft",
  "uFresStr","uF0","uReflStr","uStudioRot","uStripW","uStripSoft",
  "uCurvResp","uHiWidth","uHiInt","uIOR","uRefrStr","uDisp","uRefrFull","uDebug","uIso","uProbeRaw","uBoundR",
- "uTransp","uAlphaDebug","uPathAA","uAAThr"]
+ "uTransp","uAlphaDebug","uPathAA","uAAThr","uSpeckFix","uForceSpeck"]
  .forEach(n => U[n] = gl.getUniformLocation(prog, n));
 
 /* ============================================================
@@ -1997,6 +2024,8 @@ let ZOOM_MUL = 1;
    averaging L perturbs the ink absorption without antialiasing the edge.
    Enable with ?pathaa=1 only for further experiments. */
 let PATH_AA = Q.get("pathaa") === "1";
+let SPECK_FIX = Q.get("speckfix") !== "0";   // collapsed-chord repair, on
+let FORCE_SPECK = Q.get("forcespeck") === "1"; // test: inject the failure
 let AA_THR = [0.01, 0.08];  // smoothstep band over chord disagreement
 let EMBED_PAUSED = false;                                                   // host can pause offscreen instances
 /* transparent output: no studio backdrop — the O (plus its soft shadow)
@@ -2070,6 +2099,8 @@ addEventListener("message", ev => {
   }
   if (typeof d.dpr === "number" || d.dpr === "auto"){ EMBED_DPR = dprFrom(d.dpr); resize(); }
   if (typeof d.pathAA === "boolean") PATH_AA = d.pathAA;
+  if (typeof d.speckFix === "boolean") SPECK_FIX = d.speckFix;
+  if (typeof d.forceSpeck === "boolean") FORCE_SPECK = d.forceSpeck;
   if (Array.isArray(d.aaThr) && d.aaThr.length === 2) AA_THR = d.aaThr.map(Number);
   if (typeof d.zoomMul === "number" && isFinite(d.zoomMul)){
     ZOOM_MUL = Math.max(0.2, Math.min(5, d.zoomMul));
@@ -2303,6 +2334,8 @@ function drawScene(W, H){
   gl.uniform1f(U.uTransp, TRANSPARENT ? 1 : 0);
   gl.uniform1f(U.uAlphaDebug, ALPHA_DEBUG ? 1 : 0);
   gl.uniform1f(U.uPathAA, PATH_AA ? 1 : 0);
+  gl.uniform1f(U.uSpeckFix, SPECK_FIX ? 1 : 0);
+  gl.uniform1f(U.uForceSpeck, FORCE_SPECK ? 1 : 0);
   gl.uniform2f(U.uAAThr, AA_THR[0], AA_THR[1]);
   gl.uniform1f(U.uYaw,   drag.yaw + tiltYaw);
   gl.uniform1f(U.uPitch, drag.pitch + tiltPitch);

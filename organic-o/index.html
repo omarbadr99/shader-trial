@@ -254,6 +254,9 @@
         <option value="26">B · AA coverage band only</option>
         <option value="27">C · Budget-exhausted rays</option>
         <option value="28">D · Old-rescue candidates</option>
+        <option value="29">Unproven hit ERROR (must be black)</option>
+        <option value="30">Near-epsilon rejected</option>
+        <option value="31">Candidate band</option>
       </select></div>
 
     <div class="ctl"><label>Isolate (binary test)</label>
@@ -450,10 +453,10 @@
    Visible badge (embed mode included) + console line on startup.
    Hide with ?badge=0, or postMessage {type:"organicO", badge:false}.
 ============================================================ */
-const BUILD_ID     = "COVERAGE-09";
-const BUILD_COMMIT = "4a93820";
-const BUILD_TIME   = "2026-08-14T15:56:03Z";
-const BUILD_SHA    = "9dfb5cb2dd02";   // sha256-12 of this file with
+const BUILD_ID     = "PROOF-10";
+const BUILD_COMMIT = "__BUILD_COMMIT__";
+const BUILD_TIME   = "__BUILD_TIME__";
+const BUILD_SHA    = "__BUILD_SHA__";   // sha256-12 of this file with
                                         // the stamps blanked: verifiable
                                         // without trusting git at all
 console.log(
@@ -671,64 +674,111 @@ float map(vec3 p){ return fieldRaw(p) * uSafe * uFlat; }
    bisection) is made on the raw field. */
 struct TR {
   bool  hit;
-  float t;         // hit distance (valid when hit)
+  float t;         // frontmost VERIFIED crossing (valid when hit)
   float minRaw;    // closest approach, RAW field units
   float tAt;       // where that closest approach happened
   float steps;
   float reason;    // 0 hit, 1 budget exhausted, 2 left range, 3 verified late hit
+  float proof;     // 0 none, 1 crossing, 2 locally verified, 3 late verified
+  float nearEps;   // 1 = a near-zero POSITIVE sample was examined and rejected
 };
 
+/* Bisect a proven positive->negative bracket down to the entry surface. */
+float refineEntry(vec3 ro, vec3 rd, float a, float b){
+  for (int j=0; j<10; j++){
+    float m = 0.5*(a+b);
+    if (fieldRaw(ro + rd*m) < 0.0) b = m; else a = m;
+  }
+  return b;
+}
+
+/* INVARIANT: every hit returned here has evidence of fieldRaw <= 0.
+   A small POSITIVE field value is not an intersection — sphere tracing
+   approaches a surface asymptotically, so |f| < eps proves nothing. Treating
+   it as a hit (the COVERAGE-09 bug) let grazing rays alternate across the
+   epsilon between neighbouring pixels and manufacture dotted tracks. */
 TR traceFront(vec3 ro, vec3 rd, float tStart, float tEnd){
   TR r;
   r.hit = false; r.t = tStart; r.minRaw = 1e9; r.tAt = tStart;
-  r.steps = 0.0; r.reason = 2.0;
+  r.steps = 0.0; r.reason = 2.0; r.proof = 0.0; r.nearEps = 0.0;
   float bb = dot(ro, rd);
   float bdisc = bb*bb - (dot(ro, ro) - uBoundR*uBoundR);
-  if (bdisc <= 0.0) return r;                       // misses the bound sphere
+  if (bdisc <= 0.0) return r;
+
+  const float NEAR_EPS = 0.002;          // raw units, ~sub-pixel
   float t = tStart, tPrev = tStart;
+  float fPrev = fieldRaw(ro + rd*tStart);
+  if (fPrev <= 0.0){                     // ray begins inside the solid
+    r.t = tStart; r.hit = true; r.reason = 0.0; r.proof = 1.0; return r;
+  }
   for (int i=0; i<384; i++){
     r.steps += 1.0;
     float f = fieldRaw(ro + rd*t);
     if (f < r.minRaw){ r.minRaw = f; r.tAt = t; }
-    if (f < 0.0008){
-      float a = tPrev, b = t;                       // bracket on a SIGN CHANGE
-      for (int j=0; j<7; j++){
-        float m = 0.5*(a+b);
-        if (fieldRaw(ro + rd*m) < 0.0) b = m; else a = m;
-      }
-      r.t = b; r.hit = true; r.reason = 0.0; return r;
+
+    if (f <= 0.0){                       // PROVEN crossing
+      r.t = refineEntry(ro, rd, tPrev, t);
+      r.hit = true; r.reason = 0.0; r.proof = 1.0; return r;
     }
-    tPrev = t;
-    t += f * uSafe * uFlat;                         // conservative advance
+
+    if (f < NEAR_EPS){
+      /* Near-zero but POSITIVE: verify instead of promoting. Probe forward
+         across a few pixel widths; accept only on a real sign change. */
+      float wl = max(t, 0.001) * 1.24 / uRes.y;
+      float ta = t, fa = f;
+      for (int k=1; k<=5; k++){
+        float tb = t + wl * (0.25 * float(k) * float(k));   // 0.25 .. 6.25 px
+        if (tb > tEnd) break;
+        float fb = fieldRaw(ro + rd*tb);
+        if (fb <= 0.0){
+          r.t = refineEntry(ro, rd, ta, tb);
+          r.hit = true; r.reason = 0.0; r.proof = 2.0; return r;
+        }
+        ta = tb; fa = fb;
+      }
+      r.nearEps = 1.0;                   // examined, no crossing -> grazing miss
+    }
+
+    tPrev = t; fPrev = f;
+    t += f * uSafe * uFlat;              // conservative advance
     if (t > tEnd){ r.reason = 2.0; return r; }
-    r.reason = 1.0;                                 // still running -> budget-bound
+    r.reason = 1.0;
   }
-  /* Budget exhausted. This is NOT a hit, and it must never be promoted into
-     one just because it finished near the surface — at the production dials
-     the old test admitted rays missing by 1.2x the tube radius, which is
-     exactly how phantom one-pixel tracks appear in a coverage mask. Instead
-     verify: scan the raw field across a few pixel widths either side of the
-     closest approach and accept ONLY a real crossing (F <= 0, or a positive
-     to negative bracket). */
-  float wppL = max(r.tAt, 0.001) * 1.24 / uRes.y;
-  float span = 6.0 * wppL;
-  float lo = max(r.tAt - span, tStart), hi = min(r.tAt + span, tEnd);
-  float tp = lo, fp = fieldRaw(ro + rd*lo);
-  if (fp <= 0.0){ r.t = lo; r.hit = true; r.reason = 3.0; return r; }
-  for (int k=1; k<=8; k++){
-    float tt = lo + (hi - lo) * float(k) / 8.0;
-    float f = fieldRaw(ro + rd*tt);
-    if (f <= 0.0){
-      float a = tp, b = tt;
-      for (int j=0; j<8; j++){
-        float m = 0.5*(a+b);
-        if (fieldRaw(ro + rd*m) < 0.0) b = m; else a = m;
+
+  /* Budget exhausted. Scan the raw field around the closest approach and
+     accept ONLY a genuine crossing, returning the FRONTMOST entry — if the
+     scan starts already inside, walk backward to find the entry face rather
+     than reporting an interior point as the surface. */
+  float wl = max(r.tAt, 0.001) * 1.24 / uRes.y;
+  float lo = max(r.tAt - 6.0*wl, tStart);
+  float hi = min(r.tAt + 6.0*wl, tEnd);
+  float fLo = fieldRaw(ro + rd*lo);
+  if (fLo <= 0.0){
+    float tb = lo;
+    for (int k=1; k<=10; k++){
+      float ta = max(lo - 2.0*wl*float(k), tStart);
+      float fa = fieldRaw(ro + rd*ta);
+      if (fa > 0.0){
+        r.t = refineEntry(ro, rd, ta, tb);
+        r.hit = true; r.reason = 3.0; r.proof = 3.0; return r;
       }
-      r.t = b; r.hit = true; r.reason = 3.0; return r;
+      tb = ta;
+      if (ta <= tStart) break;
     }
-    tp = tt; fp = f;
+    r.t = tStart; r.hit = true; r.reason = 3.0; r.proof = 3.0; return r;
   }
-  return r;                                          // genuinely no crossing
+  float ta2 = lo;
+  for (int k=1; k<=10; k++){
+    float tb2 = lo + (hi - lo) * float(k) / 10.0;
+    float fb2 = fieldRaw(ro + rd*tb2);
+    if (fb2 <= 0.0){
+      r.t = refineEntry(ro, rd, ta2, tb2);
+      r.hit = true; r.reason = 3.0; r.proof = 3.0; return r;
+    }
+    ta2 = tb2;
+  }
+  r.nearEps = 1.0;
+  return r;                              // no crossing anywhere: a true miss
 }
 
 vec3 calcNormal(vec3 p){
@@ -964,6 +1014,8 @@ void main(){
   float frontSteps = fr.steps;
   float missReason = fr.reason;
   bool  inBound    = fr.steps > 0.5;
+  float hitProof   = fr.proof;
+  float nearEpsRej = fr.nearEps;
 
   float wppC = max(hit ? t : tAt, 0.001) * 1.24 / uRes.y;
 
@@ -1460,6 +1512,14 @@ void main(){
          GREEN = left the march range without hitting (overstep / real miss)
        Any track that shows RED or GREEN inside the object's silhouette is a
        coverage dropout, and its colour says which cause to fix. */
+    /* 29: UNPROVEN HIT — must be entirely black. Any magenta pixel is a hit
+       returned without evidence of fieldRaw <= 0, i.e. a logic error. */
+    else if (uDebug==29) dc = (hit && hitProof < 0.5) ? vec3(1.0, 0.0, 1.0) : vec3(0.0);
+    /* 30: near-epsilon candidates the OLD logic would have promoted to hits
+       and the verifier rejected. Cyan. Display only — never affects render. */
+    else if (uDebug==30) dc = nearEpsRej > 0.5 ? vec3(0.0, 1.0, 1.0) : vec3(0.0, 0.0, alpha*0.2);
+    /* 31: the candidate band that earns subpixel traces */
+    else if (uDebug==31) dc = band ? vec3(1.0, 0.6, 0.0) : vec3(0.0, alpha*0.25, 0.0);
     /* 25 A: binary hit, no AA at all */
     else if (uDebug==25) dc = vec3(hit ? 1.0 : 0.0);
     /* 26 B: AA contribution only — white where 0 < alpha < 1 */

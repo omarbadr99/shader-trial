@@ -445,10 +445,10 @@
    Visible badge (embed mode included) + console line on startup.
    Hide with ?badge=0, or postMessage {type:"organicO", badge:false}.
 ============================================================ */
-const BUILD_ID     = "SPECKFIX-05";
-const BUILD_COMMIT = "d529875";
-const BUILD_TIME   = "2026-08-14T09:57:26Z";
-const BUILD_SHA    = "8e37152dadd1";   // sha256-12 of this file with
+const BUILD_ID     = "DRAGFIX-06";
+const BUILD_COMMIT = "__BUILD_COMMIT__";
+const BUILD_TIME   = "__BUILD_TIME__";
+const BUILD_SHA    = "__BUILD_SHA__";   // sha256-12 of this file with
                                         // the stamps blanked: verifiable
                                         // without trusting git at all
 console.log(
@@ -1632,11 +1632,18 @@ function persistPresets(){
 /* camera orbit state — declared here so presets can capture/restore the
    view angle (front vs back facing) alongside the dials */
 const drag = { on:false, x:0, y:0, yaw:0, pitch:0 };
+/* The preset's saved camera and the visitor's manual orbit are SEPARATE.
+   The A->B blend writes viewYaw/viewPitch every frame; drag.yaw/pitch is the
+   offset the visitor adds by dragging. Rendering uses the sum, so an
+   interactive drag survives the blend instead of being overwritten by it on
+   the next frame — which is what silently disabled dragging once presets
+   carrying a "view" were baked in. */
+let viewYaw = 0, viewPitch = 0;
 
 function snapshot(){
   return {
     dials: Object.assign({}, S),
-    view: { yaw: drag.yaw, pitch: drag.pitch },   // orbit orientation
+    view: { yaw: viewYaw + drag.yaw, pitch: viewPitch + drag.pitch },  // orbit orientation
     blobs: blobs.map(b => ({ color:b.color, size:b.size, speed:b.speed,
                              amt:b.amt, tail:b.tail, drift:b.drift, follow:b.follow })),
   };
@@ -1655,8 +1662,10 @@ function applyPreset(p){
   }
   // restore the saved view; a preset with no stored view is front-facing,
   // so it snaps back to 0 instead of keeping whatever angle you last orbited
-  drag.yaw   = p.view ? p.view.yaw   : 0;
-  drag.pitch = p.view ? p.view.pitch : 0;
+  viewYaw    = p.view ? p.view.yaw   : 0;
+  viewPitch  = p.view ? p.view.pitch : 0;
+  drag.yaw   = 0;                     // manual orbit offset starts clean
+  drag.pitch = 0;
   blobs = p.blobs.map(b => mkBlob(Object.assign({}, b)));
   renderBlobs();
 }
@@ -1768,8 +1777,8 @@ function dialLerp(A, B, e){
      yank the orbit. */
   if (A.view || B.view){
     const av = A.view || { yaw:0, pitch:0 }, bv = B.view || { yaw:0, pitch:0 };
-    drag.yaw   = lerp(av.yaw,   bv.yaw,   e);
-    drag.pitch = lerp(av.pitch, bv.pitch, e);
+    viewYaw   = lerp(av.yaw,   bv.yaw,   e);
+    viewPitch = lerp(av.pitch, bv.pitch, e);
   }
   for (let i = 0; i < blobs.length; i++){
     const a = A.blobs[i], b = B.blobs[i], w = blobs[i];
@@ -2337,8 +2346,8 @@ function drawScene(W, H){
   gl.uniform1f(U.uSpeckFix, SPECK_FIX ? 1 : 0);
   gl.uniform1f(U.uForceSpeck, FORCE_SPECK ? 1 : 0);
   gl.uniform2f(U.uAAThr, AA_THR[0], AA_THR[1]);
-  gl.uniform1f(U.uYaw,   drag.yaw + tiltYaw);
-  gl.uniform1f(U.uPitch, drag.pitch + tiltPitch);
+  gl.uniform1f(U.uYaw,   viewYaw + drag.yaw + tiltYaw);
+  gl.uniform1f(U.uPitch, viewPitch + drag.pitch + tiltPitch);
   gl.uniform1f(U.uSpinPhase, ph.spin);
   gl.uniform1f(U.uOrgPhase, ph.org);
   gl.uniform1f(U.uZoom, S.zoom * ZOOM_MUL);   // strictly manual — never animated

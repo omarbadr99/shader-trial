@@ -250,6 +250,10 @@
         <option value="22">Invalid-number mask</option>
         <option value="23">Path-AA flagged pixels</option>
         <option value="24">Front-march miss reason</option>
+        <option value="25">A · Binary hit (no AA)</option>
+        <option value="26">B · AA coverage band only</option>
+        <option value="27">C · Budget-exhausted rays</option>
+        <option value="28">D · Old-rescue candidates</option>
       </select></div>
 
     <div class="ctl"><label>Isolate (binary test)</label>
@@ -446,10 +450,10 @@
    Visible badge (embed mode included) + console line on startup.
    Hide with ?badge=0, or postMessage {type:"organicO", badge:false}.
 ============================================================ */
-const BUILD_ID     = "MARCH-08";
-const BUILD_COMMIT = "5e23e60";
-const BUILD_TIME   = "2026-08-14T10:48:07Z";
-const BUILD_SHA    = "797388f1cac9";   // sha256-12 of this file with
+const BUILD_ID     = "COVERAGE-09";
+const BUILD_COMMIT = "__BUILD_COMMIT__";
+const BUILD_TIME   = "__BUILD_TIME__";
+const BUILD_SHA    = "__BUILD_SHA__";   // sha256-12 of this file with
                                         // the stamps blanked: verifiable
                                         // without trusting git at all
 console.log(
@@ -526,6 +530,7 @@ uniform float uTransp;            // 1 = transparent output: alpha = O coverage;
                                   // uBg still feeds the glass optics (refraction backdrop)
 uniform float uSpeckFix;          // 1 = repair collapsed-chord white specks
 uniform float uForceSpeck;        // test-only: inject the collapse
+uniform float uCoverAA;           // 1 = subpixel coverage AA at the silhouette
 uniform float uPathAA;            // 1 = local path-length AA at the flip boundary
 uniform vec2  uAAThr;             // smoothstep band over chord disagreement
 uniform float uAlphaDebug;        // 1 = render the emitted coverage alpha as grayscale
@@ -635,7 +640,18 @@ float thickF(float Pt){
   return max(0.25, 1.0 + a*Pt) * inversesqrt(1.0 + a*a*uPVar);
 }
 
-float map(vec3 p){
+uniform float uBoundR;   // conservative cull-sphere radius (1e6 = disabled)
+
+/* THE FIELD AND THE STEP ARE DIFFERENT QUANTITIES.
+   fieldRaw() is the implicit surface itself: zero ON the surface, and in
+   (approximately) world units, so it can be compared against world-space
+   pixel widths. map() is that field scaled by the conservative march factor
+   uSafe*uFlat — safe to STEP by, but ~4.2x smaller than world units at the
+   production dials. Mixing the two is why coverage decisions misbehaved:
+   silhouette AA compared a scaled residual against a world-space pixel
+   width, and the stall rescue compared it against a world-space constant.
+   Rule: step with map(), decide with fieldRaw(). */
+float fieldRaw(vec3 p){
   vec2 ps = rot2(p.xy, -uSpinPhase);          // shape space (rigid spin)
   float ths = atan(ps.y, ps.x);
   float thw = atan(p.y, p.x);                 // world angle — pressure space
@@ -646,7 +662,73 @@ float map(vec3 p){
   /* pressure-driven depth, separate from the fixed 3-fold zWave */
   float z  = p.z + zWave(ths) + uFluid*uDepthAmt*uRing*P3.z;
   vec2 q = vec2(pd, z/uFlat);
-  return (length(q) - tubeR(ths)*thickF(P3.y)) * uSafe * uFlat;
+  return length(q) - tubeR(ths)*thickF(P3.y);
+}
+float map(vec3 p){ return fieldRaw(p) * uSafe * uFlat; }
+
+/* Front intersection, isolated from all shading. Steps with the conservative
+   distance, but every DECISION (hit test, closest approach, bracketing,
+   bisection) is made on the raw field. */
+struct TR {
+  bool  hit;
+  float t;         // hit distance (valid when hit)
+  float minRaw;    // closest approach, RAW field units
+  float tAt;       // where that closest approach happened
+  float steps;
+  float reason;    // 0 hit, 1 budget exhausted, 2 left range, 3 verified late hit
+};
+
+TR traceFront(vec3 ro, vec3 rd, float tStart, float tEnd){
+  TR r;
+  r.hit = false; r.t = tStart; r.minRaw = 1e9; r.tAt = tStart;
+  r.steps = 0.0; r.reason = 2.0;
+  float bb = dot(ro, rd);
+  float bdisc = bb*bb - (dot(ro, ro) - uBoundR*uBoundR);
+  if (bdisc <= 0.0) return r;                       // misses the bound sphere
+  float t = tStart, tPrev = tStart;
+  for (int i=0; i<384; i++){
+    r.steps += 1.0;
+    float f = fieldRaw(ro + rd*t);
+    if (f < r.minRaw){ r.minRaw = f; r.tAt = t; }
+    if (f < 0.0008){
+      float a = tPrev, b = t;                       // bracket on a SIGN CHANGE
+      for (int j=0; j<7; j++){
+        float m = 0.5*(a+b);
+        if (fieldRaw(ro + rd*m) < 0.0) b = m; else a = m;
+      }
+      r.t = b; r.hit = true; r.reason = 0.0; return r;
+    }
+    tPrev = t;
+    t += f * uSafe * uFlat;                         // conservative advance
+    if (t > tEnd){ r.reason = 2.0; return r; }
+    r.reason = 1.0;                                 // still running -> budget-bound
+  }
+  /* Budget exhausted. This is NOT a hit, and it must never be promoted into
+     one just because it finished near the surface — at the production dials
+     the old test admitted rays missing by 1.2x the tube radius, which is
+     exactly how phantom one-pixel tracks appear in a coverage mask. Instead
+     verify: scan the raw field across a few pixel widths either side of the
+     closest approach and accept ONLY a real crossing (F <= 0, or a positive
+     to negative bracket). */
+  float wppL = max(r.tAt, 0.001) * 1.24 / uRes.y;
+  float span = 6.0 * wppL;
+  float lo = max(r.tAt - span, tStart), hi = min(r.tAt + span, tEnd);
+  float tp = lo, fp = fieldRaw(ro + rd*lo);
+  if (fp <= 0.0){ r.t = lo; r.hit = true; r.reason = 3.0; return r; }
+  for (int k=1; k<=8; k++){
+    float tt = lo + (hi - lo) * float(k) / 8.0;
+    float f = fieldRaw(ro + rd*tt);
+    if (f <= 0.0){
+      float a = tp, b = tt;
+      for (int j=0; j<8; j++){
+        float m = 0.5*(a+b);
+        if (fieldRaw(ro + rd*m) < 0.0) b = m; else a = m;
+      }
+      r.t = b; r.hit = true; r.reason = 3.0; return r;
+    }
+    tp = tt; fp = f;
+  }
+  return r;                                          // genuinely no crossing
 }
 
 vec3 calcNormal(vec3 p){
@@ -703,7 +785,6 @@ uniform float uIOR, uRefrStr, uDisp;               // refraction v1
 uniform float uRefrFull;                           // 1 = full two-interface march
 uniform int   uDebug;    // 0 = Final, else a diagnostic buffer
 uniform int   uIso;      // 0 = none, else a binary-isolation test
-uniform float uBoundR;   // conservative cull-sphere radius (1e6 = disabled)
 uniform float uProbeRaw; // 1 = write RAW float values for uDebug's channel
                          // (rendered to an RGBA32F target and read back by
                          // the pixel probe; never active in normal drawing)
@@ -870,68 +951,62 @@ void main(){
   vec3 ro = M * vec3(0.0, 0.0, camD);
   vec3 rd = M * normalize(vec3(uv*0.62, -1.0));
 
-  /* conservative bounding sphere: the whole deformed ring stays well inside
-     |p| < uBoundR across the dial ranges (validated by exact A/B pixel-diff
-     against a disabled bound; ?nocull=1 disables it for on-GPU A/B). Rays
-     that miss the sphere are pure background and skip the march entirely —
-     measured ~70% of all front-march steps were spent on miss rays. Rays
-     that enter it march only the [enter, exit] interval. */
-  float bb = dot(ro, rd);
-  float bdisc = bb*bb - (dot(ro, ro) - uBoundR*uBoundR);
-  bool inBound = bdisc > 0.0;
+  /* ---- FRONT COVERAGE ------------------------------------------------
+     One reliable binary intersection first; antialiasing second, and only
+     from real intersections. No pseudo-SDF magnitude is used as coverage. */
+  float tStart = max(0.0, camD - 2.6);
+  float tEndG  = camD + 2.6;
+  TR fr = traceFront(ro, rd, tStart, tEndG);
+  bool  hit        = fr.hit;
+  float t          = fr.t;
+  float minD       = fr.minRaw;          // RAW field units now
+  float tAt        = fr.tAt;
+  float frontSteps = fr.steps;
+  float missReason = fr.reason;
+  bool  inBound    = fr.steps > 0.5;
 
-  /* march with bisection refinement — tangent rays never shade inside.
-     REJECT-ONLY cull: surviving rays march exactly as without the cull
-     (same start, same steps), so kept pixels are bitwise identical. */
-  float missReason = 0.0;   // 0 hit, 1 budget exhausted, 2 left the range
-  float t = max(0.0, camD - 2.6);
-  float tEnd = camD + 2.6;
-  float tPrev = t;
-  float minD = 1e9, tAt = t;
-  float frontSteps = 0.0;
-  bool hit = false;
-  if (inBound){
-    /* Budget raised 170 -> 384. Steps advance only uSafe*uFlat (~0.24 at the
-       production dials) of the true distance, so a ray grazing the surface
-       crawls and used to run out of iterations mid-flight. An exhausted ray
-       is NOT a proven miss, but it was treated as one: coverage collapsed to
-       zero and the pixel turned into a hole — the dotted tracks visible in
-       Alpha Debug, and the white dotted lines over a light page. Measured at
-       the production preset and resolution, 129 pixels sat exactly at the old
-       cap with ~640 more in the 120-170 range, while the bulk of all rays
-       finish under 40 steps, so the higher ceiling costs essentially nothing:
-       every ray that already terminated still breaks at the same iteration. */
-    for (int i=0; i<384; i++){
-      frontSteps += 1.0;
-      vec3 p = ro + rd*t;
-      float d = map(p);
-      if (d < minD){ minD = d; tAt = t; }
-      if (d < 0.001){
-        float a = tPrev, b = t;
-        for (int j=0; j<5; j++){
-          float m = 0.5*(a+b);
-          if (map(ro + rd*m) < 0.0005) b = m; else a = m;
-        }
-        t = b; hit = true; missReason = 0.0; break;
-      }
-      tPrev = t;
-      t += d;
-      missReason = 1.0;                       // still going -> budget-bound
-      if (t > tEnd){ missReason = 2.0; break; }   // left the range -> real miss
-    }
+  float wppC = max(hit ? t : tAt, 0.001) * 1.24 / uRes.y;
+
+  /* Which pixels are actually uncertain? A hit whose ray is already inside
+     solid material two pixels further along is interior — full coverage, no
+     sampling. A miss further than two pixel widths from the surface is
+     exterior — zero coverage, no sampling. Everything else straddles the
+     silhouette. */
+  bool band;
+  if (hit){
+    band = fieldRaw(ro + rd*(t + 2.0*wppC)) > 0.0;
+  } else {
+    band = minD < 2.0*wppC;
   }
-  /* Stall rescue (probe-diagnosed on Apple Metal): a ray whose 4-neighbours
-     hit can plateau at map()~0.01 under fast-math, never cross the 0.001
-     threshold, and exhaust the whole step budget -> rendered as background -> the
-     dotted/dashed hairlines. TRUE misses leave via the range break above in
-     ~30-60 steps (measured p99 = 43), so budget exhaustion while pinned near
-     the surface is unique to the stall. Shade such rays at their closest
-     approach; sub-pixel depth error, matches the neighbourhood. */
-  /* Exhaustion fallback, widened to match. A ray that spent the whole (now
-     much larger) budget without terminating has been crawling alongside the
-     surface the entire time, so shading it at its closest approach is far
-     closer to the truth than punching a hole in the object. */
-  if (!hit && frontSteps > 383.5 && minD < 0.05){ hit = true; t = tAt; }
+
+  float alpha;
+  float aaSamples = 0.0;
+  if (!band){
+    alpha = hit ? 1.0 : 0.0;
+  } else if (uCoverAA > 0.5){
+    /* Subpixel coverage: count genuine intersections, do not interpolate a
+       field magnitude. Four extra front traces, silhouette pixels only. */
+    float hits = hit ? 1.0 : 0.0;
+    vec2 o0 = vec2( 0.35,  0.35), o1 = vec2(-0.35,  0.35),
+         o2 = vec2( 0.35, -0.35), o3 = vec2(-0.35, -0.35);
+    float px = 1.0 / uRes.y;
+    vec3 r0 = M * normalize(vec3((uv + o0*px)*0.62, -1.0));
+    vec3 r1 = M * normalize(vec3((uv + o1*px)*0.62, -1.0));
+    vec3 r2 = M * normalize(vec3((uv + o2*px)*0.62, -1.0));
+    vec3 r3 = M * normalize(vec3((uv + o3*px)*0.62, -1.0));
+    hits += traceFront(ro, r0, tStart, tEndG).hit ? 1.0 : 0.0;
+    hits += traceFront(ro, r1, tStart, tEndG).hit ? 1.0 : 0.0;
+    hits += traceFront(ro, r2, tStart, tEndG).hit ? 1.0 : 0.0;
+    hits += traceFront(ro, r3, tStart, tEndG).hit ? 1.0 : 0.0;
+    alpha = hits / 5.0;
+    aaSamples = 1.0;
+    /* a covered centre must still shade, even at 1/5 coverage */
+    if (hit && alpha <= 0.0) alpha = 0.2;
+  } else {
+    /* AA disabled (?coveraa=0): fall back to a RAW-unit ramp, which is at
+       least dimensionally consistent, unlike the previous scaled compare */
+    alpha = hit ? 1.0 : 1.0 - smoothstep(0.0, max(uSoft*wppC, wppC*1.2), minD);
+  }
 
   /* background: flat color or a backdrop image; slight vignette + a soft
      shadow that pools below the object (key light comes from above) */
@@ -950,13 +1025,8 @@ void main(){
           ? bgBase
           : bgBase * (1.0 - 0.04*vig*vig) * (1.0 + 0.008*uv.y);
 
-  float wpp = tAt * 1.24 / uRes.y;
-  float aa  = uSoft * wpp;
-  /* V1: smoothstep silhouette transition on a world-space pixel estimate —
-     crisp, derivative-free, no blurred outer edge. Legacy keeps its ramp. */
-  float alpha;
-  if (uOptV1 > 0.5) alpha = hit ? 1.0 : 1.0 - smoothstep(0.0, max(aa, wpp*1.2), minD);
-  else              alpha = hit ? 1.0 : clamp(1.0 - minD/aa, 0.0, 1.0);
+  float wpp = wppC;
+  float aa  = uSoft * wpp;   // retained: the optical path uses aa for env width
 
   /* diagnostic capture vars (set inside the V1 branch) */
   float dFsteps=frontSteps, dFresid=0.0, dEsteps=0.0, dEresid=0.0, dL=0.0;
@@ -1390,6 +1460,17 @@ void main(){
          GREEN = left the march range without hitting (overstep / real miss)
        Any track that shows RED or GREEN inside the object's silhouette is a
        coverage dropout, and its colour says which cause to fix. */
+    /* 25 A: binary hit, no AA at all */
+    else if (uDebug==25) dc = vec3(hit ? 1.0 : 0.0);
+    /* 26 B: AA contribution only — white where 0 < alpha < 1 */
+    else if (uDebug==26) dc = vec3((alpha > 0.001 && alpha < 0.999) ? 1.0 : 0.0);
+    /* 27 C: rays that exhausted the step budget (red), incl. verified ones (yellow) */
+    else if (uDebug==27) dc = missReason > 2.5 ? vec3(1.0, 1.0, 0.0)
+                            : (missReason > 0.5 && missReason < 1.5 ? vec3(1.0, 0.0, 0.0) : vec3(0.0));
+    /* 28 D: what the OLD rescue would have promoted — shown, never applied.
+       Uses the old scaled criterion so the comparison is like for like. */
+    else if (uDebug==28) dc = (!fr.hit && frontSteps > 383.5 && minD*uSafe*uFlat < 0.05)
+                            ? vec3(1.0, 0.0, 1.0) : vec3(0.0, alpha*0.25, 0.0);
     else if (uDebug==24) dc = hit && missReason < 0.5 ? vec3(0.10, 0.15, 0.55)
                             : (missReason > 1.5 ? vec3(0.0, 0.9, 0.0) : vec3(0.95, 0.0, 0.0));
     O = vec4(dc, 1.0); return;
@@ -2064,8 +2145,9 @@ let ZOOM_MUL = 1;
    but it is a symptom of the far-wall visibility flip, not the whole cause —
    averaging L perturbs the ink absorption without antialiasing the edge.
    Enable with ?pathaa=1 only for further experiments. */
+let COVER_AA = Q.get("coveraa") !== "0";  // subpixel coverage AA, on
 let PATH_AA = Q.get("pathaa") === "1";
-let SPECK_FIX = Q.get("speckfix") !== "0";   // collapsed-chord repair, on
+let SPECK_FIX = Q.get("speckfix") === "1";   // off while coverage is under test
 let FORCE_SPECK = Q.get("forcespeck") === "1"; // test: inject the failure
 /* diagnostics reachable without the panel: ?iso=11 kills all hash/jitter/noise,
    ?debug=22 flags invalid numbers, ?debug=8 shows the chord length */
@@ -2143,6 +2225,7 @@ addEventListener("message", ev => {
     canvas.style.pointerEvents = EMBED_INTERACT ? "auto" : "none";
   }
   if (typeof d.dpr === "number" || d.dpr === "auto"){ EMBED_DPR = dprFrom(d.dpr); resize(); }
+  if (typeof d.coverAA === "boolean") COVER_AA = d.coverAA;
   if (typeof d.pathAA === "boolean") PATH_AA = d.pathAA;
   if (typeof d.speckFix === "boolean") SPECK_FIX = d.speckFix;
   if (typeof d.debugView === "number") FORCE_DEBUG = d.debugView;
@@ -2382,6 +2465,7 @@ function drawScene(W, H){
   if (FORCE_ISO   !== null && !isNaN(FORCE_ISO))   S.iso   = FORCE_ISO;
   gl.uniform1f(U.uTransp, TRANSPARENT ? 1 : 0);
   gl.uniform1f(U.uAlphaDebug, ALPHA_DEBUG ? 1 : 0);
+  gl.uniform1f(U.uCoverAA, COVER_AA ? 1 : 0);
   gl.uniform1f(U.uPathAA, PATH_AA ? 1 : 0);
   gl.uniform1ui(U.uSeedU, (frameN >>> 0));
   gl.uniform1f(U.uSpeckFix, SPECK_FIX ? 1 : 0);

@@ -249,6 +249,7 @@
         <option value="21">Pre-tone-map color</option>
         <option value="22">Invalid-number mask</option>
         <option value="23">Path-AA flagged pixels</option>
+        <option value="24">Front-march miss reason</option>
       </select></div>
 
     <div class="ctl"><label>Isolate (binary test)</label>
@@ -445,10 +446,10 @@
    Visible badge (embed mode included) + console line on startup.
    Hide with ?badge=0, or postMessage {type:"organicO", badge:false}.
 ============================================================ */
-const BUILD_ID     = "HASH-DIAG-07";
-const BUILD_COMMIT = "b2015ce";
-const BUILD_TIME   = "2026-08-14T10:28:03Z";
-const BUILD_SHA    = "6b5b7c84c04f";   // sha256-12 of this file with
+const BUILD_ID     = "MARCH-08";
+const BUILD_COMMIT = "__BUILD_COMMIT__";
+const BUILD_TIME   = "__BUILD_TIME__";
+const BUILD_SHA    = "__BUILD_SHA__";   // sha256-12 of this file with
                                         // the stamps blanked: verifiable
                                         // without trusting git at all
 console.log(
@@ -882,6 +883,7 @@ void main(){
   /* march with bisection refinement — tangent rays never shade inside.
      REJECT-ONLY cull: surviving rays march exactly as without the cull
      (same start, same steps), so kept pixels are bitwise identical. */
+  float missReason = 0.0;   // 0 hit, 1 budget exhausted, 2 left the range
   float t = max(0.0, camD - 2.6);
   float tEnd = camD + 2.6;
   float tPrev = t;
@@ -889,7 +891,17 @@ void main(){
   float frontSteps = 0.0;
   bool hit = false;
   if (inBound){
-    for (int i=0; i<170; i++){
+    /* Budget raised 170 -> 384. Steps advance only uSafe*uFlat (~0.24 at the
+       production dials) of the true distance, so a ray grazing the surface
+       crawls and used to run out of iterations mid-flight. An exhausted ray
+       is NOT a proven miss, but it was treated as one: coverage collapsed to
+       zero and the pixel turned into a hole — the dotted tracks visible in
+       Alpha Debug, and the white dotted lines over a light page. Measured at
+       the production preset and resolution, 129 pixels sat exactly at the old
+       cap with ~640 more in the 120-170 range, while the bulk of all rays
+       finish under 40 steps, so the higher ceiling costs essentially nothing:
+       every ray that already terminated still breaks at the same iteration. */
+    for (int i=0; i<384; i++){
       frontSteps += 1.0;
       vec3 p = ro + rd*t;
       float d = map(p);
@@ -900,21 +912,26 @@ void main(){
           float m = 0.5*(a+b);
           if (map(ro + rd*m) < 0.0005) b = m; else a = m;
         }
-        t = b; hit = true; break;
+        t = b; hit = true; missReason = 0.0; break;
       }
       tPrev = t;
       t += d;
-      if (t > tEnd) break;
+      missReason = 1.0;                       // still going -> budget-bound
+      if (t > tEnd){ missReason = 2.0; break; }   // left the range -> real miss
     }
   }
   /* Stall rescue (probe-diagnosed on Apple Metal): a ray whose 4-neighbours
      hit can plateau at map()~0.01 under fast-math, never cross the 0.001
-     threshold, and exhaust all 170 steps -> rendered as background -> the
+     threshold, and exhaust the whole step budget -> rendered as background -> the
      dotted/dashed hairlines. TRUE misses leave via the range break above in
      ~30-60 steps (measured p99 = 43), so budget exhaustion while pinned near
      the surface is unique to the stall. Shade such rays at their closest
      approach; sub-pixel depth error, matches the neighbourhood. */
-  if (!hit && frontSteps > 169.5 && minD < 0.02){ hit = true; t = tAt; }
+  /* Exhaustion fallback, widened to match. A ray that spent the whole (now
+     much larger) budget without terminating has been crawling alongside the
+     surface the entire time, so shading it at its closest approach is far
+     closer to the truth than punching a hole in the object. */
+  if (!hit && frontSteps > 383.5 && minD < 0.05){ hit = true; t = tAt; }
 
   /* background: flat color or a backdrop image; slight vignette + a soft
      shadow that pools below the object (key light comes from above) */
@@ -1348,7 +1365,7 @@ void main(){
     if      (uDebug==1)  dc = alpha>0.0 ? vec3(0.55) : vec3(0.05);
     else if (uDebug==2)  dc = vec3(clamp((dT0-(camD2-2.6))/5.2, 0.0, 1.0));
     else if (uDebug==3)  dc = vec3(clamp(dFresid*1000.0, 0.0, 1.0));
-    else if (uDebug==4)  dc = vec3(clamp(dFsteps/170.0, 0.0, 1.0));
+    else if (uDebug==4)  dc = vec3(clamp(dFsteps/384.0, 0.0, 1.0));
     else if (uDebug==5)  dc = vec3(clamp((dT0+dL-(camD2-2.6))/5.2, 0.0, 1.0));
     else if (uDebug==6)  dc = vec3(clamp(dEresid*500.0, 0.0, 1.0));
     else if (uDebug==7)  dc = vec3(clamp(dEsteps/60.0, 0.0, 1.0));
@@ -1367,6 +1384,14 @@ void main(){
     else if (uDebug==20) dc = clamp(dOD*0.3, 0.0, 1.0);
     else if (uDebug==21) dc = toSRGB(clamp(dPre, 0.0, 1.0));
     else if (uDebug==23) dc = vec3(dPathAA, alpha*0.35, 0.0);  // red = extra samples
+    /* 24: why the front march ended.
+         blue  = hit normally
+         RED   = ran out of step budget mid-flight  (raise the budget)
+         GREEN = left the march range without hitting (overstep / real miss)
+       Any track that shows RED or GREEN inside the object's silhouette is a
+       coverage dropout, and its colour says which cause to fix. */
+    else if (uDebug==24) dc = hit && missReason < 0.5 ? vec3(0.10, 0.15, 0.55)
+                            : (missReason > 1.5 ? vec3(0.0, 0.9, 0.0) : vec3(0.95, 0.0, 0.0));
     O = vec4(dc, 1.0); return;
   }
 

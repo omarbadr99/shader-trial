@@ -266,6 +266,10 @@
         <option value="38">Exit residual ERROR</option>
         <option value="39">Exit proof class</option>
         <option value="40">Exit T continuity</option>
+        <option value="41">CLEAN · invalid-number mask</option>
+        <option value="42">CLEAN · surface normal</option>
+        <option value="43">CLEAN · optical thickness</option>
+        <option value="44">CLEAN · pre-tone-map</option>
       </select></div>
 
     <div class="ctl"><label>Isolate (binary test)</label>
@@ -462,10 +466,10 @@
    Visible badge (embed mode included) + console line on startup.
    Hide with ?badge=0, or postMessage {type:"organicO", badge:false}.
 ============================================================ */
-const BUILD_ID     = "EXIT-12";
-const BUILD_COMMIT  = "e816ddd";
-const BUILD_TIME    = "2026-08-14T19:03:19Z";
-const BUILD_SHA     = "4b607275c858";   // sha256-12 of this file with
+const BUILD_ID     = "CLEAN-13";
+const BUILD_COMMIT   = "__BUILD_COMMIT__";
+const BUILD_TIME     = "__BUILD_TIME__";
+const BUILD_SHA      = "__BUILD_SHA__";   // sha256-12 of this file with
                                         // the stamps blanked: verifiable
                                         // without trusting git at all
 console.log(
@@ -542,6 +546,7 @@ uniform float uTransp;            // 1 = transparent output: alpha = O coverage;
                                   // uBg still feeds the glass optics (refraction backdrop)
 uniform float uSpeckFix;          // 1 = repair collapsed-chord white specks
 uniform float uForceSpeck;        // test-only: inject the collapse
+uniform float uRenderer;          // 0 legacy EXIT-12, 1 clean production, 2 difference
 uniform float uCoverAA;           // 1 = subpixel coverage AA at the silhouette
 uniform float uPathAA;            // 1 = local path-length AA at the flip boundary
 uniform vec2  uAAThr;             // smoothstep band over chord disagreement
@@ -994,6 +999,97 @@ vec4 refrSmooth(vec3 I, vec3 N, float eta){
 }
 
 /* per-channel optical depth of the liquid at a point + how "core" it is */
+/* ============================================================
+   CLEAN PRODUCTION RENDERER
+   Built beside the legacy path, sharing its uniforms, presets, camera and
+   clocks. It removes whole CLASSES of instability rather than patching
+   their symptoms:
+     - normals are ANALYTIC from the ring parameters, never finite
+       differences of the blended pseudo-SDF (no epsilon, no crease, no
+       normalize-near-zero, resolution independent)
+     - no hash, no jitter, no stochastic sampling anywhere
+     - no curvature-kink-driven environment widening: a numerical kink can
+       no longer control brightness or highlight width
+     - optical thickness is analytic from the local elliptical cross
+       section, so there is no second raymarch and no one-pixel topology flip
+     - one continuous transmission direction; no TIR branch
+     - chromatic fringe is a continuous tint, not extra rays
+   Every operation below is a composition of continuous functions.
+============================================================ */
+float SAFE = 1e-8;
+vec3 safeNorm(vec3 v, vec3 fallback){
+  float l2 = dot(v, v);
+  return l2 > SAFE ? v * inversesqrt(l2) : fallback;
+}
+vec2 safeNorm2(vec2 v, vec2 fallback){
+  float l2 = dot(v, v);
+  return l2 > SAFE ? v * inversesqrt(l2) : fallback;
+}
+
+/* Local tube frame at p: cross-section coordinates, tube radius, and the
+   in-plane outward direction. Smooth everywhere on the shell. */
+void tubeFrame(vec3 p, out vec2 csC, out float csR, out vec2 dir2,
+               out float ths, out vec3 P3out){
+  vec2 ps = rot2(p.xy, -uSpinPhase);
+  ths = atan(ps.y, ps.x);
+  float thw = atan(p.y, p.x);
+  vec3 P3 = uFluid > 0.0005 ? fluidP3(thw) : vec3(0.0);
+  P3out = P3;
+  float pd = pathD(ps) - uFluid*uCenterAmt*P3.x;
+  float z  = p.z + zWave(ths) + uFluid*uDepthAmt*uRing*P3.z;
+  csC  = vec2(pd, z/uFlat);
+  csR  = max(tubeR(ths)*thickF(P3.y), 1e-4);
+  /* radial direction of the ring path. Using the centre direction keeps this
+     free of the rounded-triangle branch and the corner-weight blend, whose
+     derivatives are exactly where the field creases. */
+  dir2 = safeNorm2(ps, vec2(1.0, 0.0));
+}
+
+/* ANALYTIC surface normal. Differentiates only smooth, low-frequency terms:
+   the cross-section, the taper and the out-of-plane wave. No abs(), no
+   triangle branch, no spatial shape blend, no finite differences. */
+vec3 cleanNormal(vec3 p){
+  vec2 csC; float csR; vec2 dir2; float ths; vec3 P3;
+  tubeFrame(p, csC, csR, dir2, ths, P3);
+  vec2 u = safeNorm2(csC, vec2(1.0, 0.0));       // outward in cross-section
+  /* tangential correction: the tube radius tapers with theta and the
+     centreline waves out of plane, both analytic */
+  float dR   = -uTube * uTaper * sin(ths + 0.4);
+  float dZ   =  uOrganic * 0.08 * uRing * 3.0 * cos(3.0*ths - uOrgPhase*1.3);
+  float tang = (u.y / uFlat) * dZ - dR;
+  vec2 t2 = vec2(-dir2.y, dir2.x);
+  vec2 gxy = dir2 * u.x + t2 * tang;
+  float gz = u.y / uFlat;
+  vec2 gw = rot2(gxy, uSpinPhase);               // back to world
+  return safeNorm(vec3(gw, gz), vec3(0.0, 0.0, 1.0));
+}
+
+/* Analytic optical thickness. In cross-section space the shell is a circle of
+   radius csR; a ray entering at csC travelling at velocity v exits at
+   t = -2*dot(csC,v)/dot(v,v). Continuous in every input — no marching, so no
+   bracket to lose and no per-pixel topology change. */
+float cleanChord(vec3 p, vec3 dir){
+  vec2 csC; float csR; vec2 dir2; float ths; vec3 P3;
+  tubeFrame(p, csC, csR, dir2, ths, P3);
+  vec2 dxy = rot2(dir.xy, -uSpinPhase);
+  vec2 v = vec2(dot(dxy, dir2), dir.z / uFlat);
+  float vv = max(dot(v, v), 1e-6);
+  float tExit = -2.0 * dot(csC, v) / vv;
+  return clamp(tExit, 0.0, 6.0);
+}
+
+/* One continuous transmission direction. At grazing incidence it slides
+   smoothly toward the reflected direction instead of switching branch, so
+   adjacent pixels never follow different topology. */
+vec3 cleanTransmit(vec3 rd, vec3 n, float ndv){
+  float eta = 1.0 / max(uIOR, 1.0001);
+  float kk  = 1.0 - eta*eta*(1.0 - ndv*ndv);
+  float w   = smoothstep(0.0, 0.06, kk);
+  vec3 refr = eta*rd + (eta*ndv - sqrt(max(kk, 0.0)))*n;
+  vec3 refl = reflect(rd, n);
+  return safeNorm(mix(refl, refr, w), -n);
+}
+
 vec3 inkOD(vec3 p, out float coreW){
   vec2 ps   = rot2(p.xy, -uSpinPhase);
   float ths = atan(ps.y, ps.x);               // shape angle (taper, waves)
@@ -1056,6 +1152,77 @@ mat3 orbit(float yaw, float pitch){
   mat3 ry = mat3(cy,0.,-sy, 0.,1.,0., sy,0.,cy);
   mat3 rx = mat3(1.,0.,0., 0.,cp,sp, 0.,-sp,cp);
   return ry*rx;
+}
+
+/* Clean production shading. Deterministic stratified volume sampling, smooth
+   roughness, continuous chromatic tint, all terms compositions of clamp /
+   mix / smoothstep / dot / smooth exponentials. */
+vec3 shadeClean(vec3 p, vec3 rd, vec3 bgc, out vec3 preTone, out float bad){
+  bad = 0.0;
+  vec3 n = cleanNormal(p);
+  float ndv = clamp(dot(n, -rd), 0.0, 1.0);
+
+  vec3 rIn = cleanTransmit(rd, n, ndv);
+  float L  = cleanChord(p + rIn*0.002, rIn);
+
+  /* deterministic stratified centres — no per-pixel or per-frame randomness */
+  const int NS = 10;
+  float st = L / float(NS);
+  vec3 od = vec3(0.0);
+  float shellT = 0.0;
+  for (int i=0; i<NS; i++){
+    float depth = (float(i) + 0.5) / float(NS);
+    float cw;
+    od += inkOD(p + rIn*(depth*L), cw) * st;
+    shellT += (1.0 - cw) * st;
+  }
+  od = max(od, vec3(0.0));
+
+  vec3 seenL = toLin(bgc);
+  vec3 inkT  = exp(-clamp(od * uInk * 2.4, 0.0, 30.0));
+  float milk = (1.0 - exp(-clamp(L*uFrost*0.9 + shellT*uFrost*2.4, 0.0, 30.0)))
+             * mix(0.55, 0.18, uShellCl);
+  vec3 milkL = vec3(0.78, 0.84, 0.93);
+  vec3 trans = mix(seenL * inkT, milkL * exp(-clamp(od*uInk*1.7, 0.0, 30.0)), milk);
+
+  /* form light from a smooth dot product only */
+  vec3 ldv = normalize(vec3(-0.28, 0.86, 0.42));
+  float form = 0.5 + 0.5*dot(n, ldv);
+  trans *= mix(1.0, 0.70 + 0.42*form, uLight*0.8);
+
+  /* Roughness from SMOOTH quantities only: the dial and an analytic tube
+     curvature proxy. No neighbour-normal difference, so a numerical kink can
+     never widen or brighten the highlight. */
+  vec2 csC; float csR; vec2 dir2; float ths; vec3 P3;
+  tubeFrame(p, csC, csR, dir2, ths, P3);
+  float kRel  = clamp(csR / max(uTube, 0.05), 0.25, 3.0);
+  float rough = clamp(uHiWidth * mix(1.0, 1.0/kRel, uCurvResp), 0.015, 0.4);
+
+  float F = clamp((uF0 + (1.0 - uF0)*pow(clamp(1.0 - ndv, 0.0, 1.0), 5.0)) * uFresStr, 0.0, 1.0);
+  vec3 refl = envStudio(reflect(rd, n), rough, uHiInt) * uReflStr;
+
+  /* Chromatic fringe as a continuous tint driven by Fresnel and N.V — no
+     secondary red/green/blue paths to multiply discontinuities. */
+  float fr = F * (1.0 - ndv);
+  vec3 tint = vec3(1.0 - uDisp*6.0*fr, 1.0, 1.0 + uDisp*14.0*fr);
+
+  vec3 surf = mix(trans, refl, F) * tint;
+
+  /* glare, smooth */
+  vec3 h = normalize(ldv - rd);
+  float ndh = clamp(dot(n, h), 0.0, 1.0);
+  float coat = 0.4 + 0.6*milk;
+  surf += (pow(ndh, 22.0)*0.26 + pow(ndh, 120.0)*0.34) * uGlare * coat
+        * mix(vec3(1.0), 0.35 + 0.65*inkT, 0.6);
+
+  preTone = surf;
+  if (any(isnan(surf)) || any(isinf(surf)) ||
+      any(isnan(n)) || any(isinf(n)) || isnan(L) || isinf(L)) bad = 1.0;
+
+  vec3 xe = max(surf, 0.0) * uExposure;
+  vec3 mapd = mix(clamp(xe, 0.0, 1.0), acesFit(xe), uRolloff);
+  mapd = mapd*(1.0 - uLift) + vec3(uLift);
+  return toSRGB(clamp(mapd, 0.0, 1.0));
 }
 
 void main(){
@@ -1180,8 +1347,46 @@ void main(){
   float dFsteps=frontSteps, dFresid=0.0, dEsteps=0.0, dEresid=0.0, dL=0.0;
   float dTIR=0.0, dF=0.0, dKap=0.0, dShell=0.0, dCore=0.0, dT0=0.0, dPathAA=0.0;
   float exitValid=1.0, exitProof=0.0, exitResid=0.0;
+  vec3 cleanDiffCol = vec3(0.0); float haveClean = 0.0;
   vec3 dN=vec3(0.), dNEx=vec3(0.), dRefl=vec3(0.), dRefr=vec3(0.);
   vec3 dEnvRaw=vec3(0.), dEnvFilt=vec3(0.), dOD=vec3(0.), dPre=vec3(0.);
+
+  /* ---- CLEAN PRODUCTION PATH ------------------------------------------
+     Shades only a real surface hit. A miss contributes nothing; coverage
+     alone never synthesises a surface from a closest approach. */
+  if (uRenderer > 0.5){
+    vec3 cleanCol = bg;
+    vec3 cleanPre = vec3(0.0);
+    float cleanBad = 0.0;
+    if (hit && alpha > 0.0){
+      vec3 pHit = ro + rd*t;
+      vec3 sc = shadeClean(pHit, rd, bg, cleanPre, cleanBad);
+      cleanCol = mix(bg, sc, 1.0);
+    }
+    if (uDebug == 41){ O = vec4(cleanBad > 0.5 ? vec3(1.0,0.0,1.0) : vec3(0.0), 1.0); return; }
+    if (uDebug == 42){ O = vec4(0.5 + 0.5*cleanNormal(ro + rd*t) * (hit ? 1.0 : 0.0), 1.0); return; }
+    if (uDebug == 43){ float Lc = hit ? cleanChord(ro + rd*t, cleanTransmit(rd, cleanNormal(ro+rd*t),
+                          clamp(dot(cleanNormal(ro+rd*t), -rd),0.0,1.0))) : 0.0;
+                       O = vec4(vec3(clamp(Lc/1.2, 0.0, 1.0)), 1.0); return; }
+    if (uDebug == 44){ O = vec4(toSRGB(clamp(cleanPre, 0.0, 1.0)), 1.0); return; }
+    if (uRenderer < 1.5){
+      if (uTransp > 0.5){
+        vec3 bgDispC;
+        if (uOptV1 > 0.5 && uIso != 12){
+          vec3 xe2 = max(toLin(bg), 0.0) * uExposure;
+          vec3 md2 = mix(clamp(xe2, 0.0, 1.0), acesFit(xe2), uRolloff);
+          bgDispC = toSRGB(md2*(1.0 - uLift) + vec3(uLift));
+        } else bgDispC = bg;
+        O = vec4(clamp(cleanCol - bgDispC*(1.0 - alpha), 0.0, 1.0), clamp(alpha, 0.0, 1.0));
+      } else {
+        O = vec4(mix(bg, cleanCol, alpha), 1.0);
+      }
+      return;
+    }
+    /* uRenderer == 2: difference — fall through, legacy computes below and
+       the two are compared at the end */
+    cleanDiffCol = cleanCol; haveClean = 1.0;
+  }
 
   vec3 col;
   if (uOptV1 > 0.5){
@@ -1648,6 +1853,10 @@ void main(){
      specks). Fall back to the local background so it is invisible. */
   if (any(isnan(col)) || any(isinf(col))) col = bg;
 
+  if (haveClean > 0.5){
+    /* Difference view: |clean - legacy|, amplified, on identical geometry */
+    O = vec4(clamp(abs(cleanDiffCol - col) * 8.0, 0.0, 1.0), 1.0); return;
+  }
   if (uTransp > 0.5){
     /* TRANSPARENT OUTPUT — unpremultiply against the known internal backdrop.
        col is the finished opaque pixel: backdrop and object already blended
@@ -2311,6 +2520,7 @@ let ZOOM_MUL = 1;
    averaging L perturbs the ink absorption without antialiasing the edge.
    Enable with ?pathaa=1 only for further experiments. */
 let COVER_AA = Q.get("coveraa") !== "0";  // subpixel coverage AA, on
+let RENDERER = Q.has("renderer") ? parseFloat(Q.get("renderer")) : 1;  // 1 = clean production
 /* RAW FRAME CAPTURE: gl.readPixels straight off the drawing buffer, shown at
    1 device pixel per texel with no smoothing. If the tracks are in here they
    are the shader's; if this is clean and the page still shows them, they are
@@ -2450,6 +2660,7 @@ addEventListener("message", ev => {
   }
   if (typeof d.dpr === "number" || d.dpr === "auto"){ EMBED_DPR = dprFrom(d.dpr); resize(); }
   if (typeof d.coverAA === "boolean") COVER_AA = d.coverAA;
+  if (typeof d.renderer === "number") RENDERER = d.renderer;
   if (d.rawCapture === true) RAW_CAPTURE = true;
   if (d.rawCapture === false) removeRawOverlay();
   if (typeof d.pathAA === "boolean") PATH_AA = d.pathAA;
@@ -2692,6 +2903,7 @@ function drawScene(W, H){
   gl.uniform1f(U.uTransp, TRANSPARENT ? 1 : 0);
   gl.uniform1f(U.uAlphaDebug, ALPHA_DEBUG ? 1 : 0);
   gl.uniform1f(U.uCoverAA, COVER_AA ? 1 : 0);
+  gl.uniform1f(U.uRenderer, RENDERER);
   gl.uniform1f(U.uPathAA, PATH_AA ? 1 : 0);
   gl.uniform1ui(U.uSeedU, (frameN >>> 0));
   gl.uniform1f(U.uSpeckFix, SPECK_FIX ? 1 : 0);

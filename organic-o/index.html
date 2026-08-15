@@ -2666,7 +2666,10 @@ function grabRawFrame(){
   document.body.appendChild(rawOverlay);
 }
 let PATH_AA = Q.get("pathaa") === "1";
-let SPECK_FIX = Q.get("speckfix") === "1";   // off while coverage is under test
+/* ON in production. This was switched off during the coverage
+   investigation and never restored, which left the repair for curved
+   dotted tracks dead in the shipped build. Disable with ?speckfix=0. */
+let SPECK_FIX = Q.get("speckfix") !== "0";
 let FORCE_SPECK = Q.get("forcespeck") === "1"; // test: inject the failure
 /* diagnostics reachable without the panel: ?iso=11 kills all hash/jitter/noise,
    ?debug=22 flags invalid numbers, ?debug=8 shows the chord length */

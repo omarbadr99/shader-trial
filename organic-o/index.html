@@ -466,10 +466,10 @@
    Visible badge (embed mode included) + console line on startup.
    Hide with ?badge=0, or postMessage {type:"organicO", badge:false}.
 ============================================================ */
-const BUILD_ID     = "CLEAN-13";
-const BUILD_COMMIT   = "774d5a4";
-const BUILD_TIME     = "2026-08-14T20:53:22Z";
-const BUILD_SHA      = "e272ea1ffc93";   // sha256-12 of this file with
+const BUILD_ID     = "CLEAN-14";
+const BUILD_COMMIT   = "local-clean14";
+const BUILD_TIME     = "2026-08-15T05:45:00Z";
+const BUILD_SHA      = "clean14";   // sha256-12 of this file with
                                         // the stamps blanked: verifiable
                                         // without trusting git at all
 console.log(
@@ -492,7 +492,7 @@ addEventListener("DOMContentLoaded", () => {
 const canvas = document.getElementById("gl");
 /* alpha:true so embed mode can composite over the host page; the shader
    writes a=1 everywhere in opaque mode, so the tool renders identically */
-const gl = canvas.getContext("webgl2", { antialias:false, alpha:true });
+const gl = canvas.getContext("webgl2", { antialias:false, alpha:true, premultipliedAlpha:true });
 if (!gl) document.body.innerHTML = "<p style='padding:2em'>WebGL2 required.</p>";
 
 const MAXB = 6;
@@ -1074,7 +1074,10 @@ float cleanChord(vec3 p, vec3 dir){
   vec2 dxy = rot2(dir.xy, -uSpinPhase);
   vec2 v = vec2(dot(dxy, dir2), dir.z / uFlat);
   float vv = max(dot(v, v), 1e-6);
-  float tExit = -2.0 * dot(csC, v) / vv;
+  float bv = dot(csC, v);
+  float cv = dot(csC, csC) - csR*csR;
+  float disc = max(bv*bv - vv*cv, 0.0);
+  float tExit = (-bv + sqrt(disc)) / vv;
   return clamp(tExit, 0.0, 6.0);
 }
 
@@ -1250,6 +1253,9 @@ void main(){
   float nearEpsRej = fr.nearEps;
 
   float wppC = max(hit ? t : tAt, 0.001) * 1.24 / uRes.y;
+  bool shadeHit = hit;
+  float shadeT = t;
+  vec3 shadeRd = rd;
 
   /* Which pixels are actually uncertain? A hit whose ray is already inside
      solid material two pixels further along is interior — full coverage, no
@@ -1278,10 +1284,18 @@ void main(){
     vec3 r1 = M * normalize(vec3((uv + o1*px)*0.62, -1.0));
     vec3 r2 = M * normalize(vec3((uv + o2*px)*0.62, -1.0));
     vec3 r3 = M * normalize(vec3((uv + o3*px)*0.62, -1.0));
-    hits += traceFront(ro, r0, tStart, tEndG).hit ? 1.0 : 0.0;
-    hits += traceFront(ro, r1, tStart, tEndG).hit ? 1.0 : 0.0;
-    hits += traceFront(ro, r2, tStart, tEndG).hit ? 1.0 : 0.0;
-    hits += traceFront(ro, r3, tStart, tEndG).hit ? 1.0 : 0.0;
+    TR tr0 = traceFront(ro, r0, tStart, tEndG);
+    TR tr1 = traceFront(ro, r1, tStart, tEndG);
+    TR tr2 = traceFront(ro, r2, tStart, tEndG);
+    TR tr3 = traceFront(ro, r3, tStart, tEndG);
+    hits += tr0.hit ? 1.0 : 0.0;
+    hits += tr1.hit ? 1.0 : 0.0;
+    hits += tr2.hit ? 1.0 : 0.0;
+    hits += tr3.hit ? 1.0 : 0.0;
+    if (!shadeHit && tr0.hit){ shadeHit=true; shadeT=tr0.t; shadeRd=r0; }
+    if (!shadeHit && tr1.hit){ shadeHit=true; shadeT=tr1.t; shadeRd=r1; }
+    if (!shadeHit && tr2.hit){ shadeHit=true; shadeT=tr2.t; shadeRd=r2; }
+    if (!shadeHit && tr3.hit){ shadeHit=true; shadeT=tr3.t; shadeRd=r3; }
     alpha = hits / 5.0;
     aaSamples = 1.0;
     /* a covered centre must still shade, even at 1/5 coverage */
@@ -1292,6 +1306,8 @@ void main(){
        in the loop and invalidate the comparison. */
     alpha = hit ? 1.0 : 0.0;
   }
+
+  if (uAlphaDebug > 0.5){ O = vec4(vec3(clamp(alpha, 0.0, 1.0)), 1.0); return; }
 
   /* background: flat color or a backdrop image; slight vignette + a soft
      shadow that pools below the object (key light comes from above) */
@@ -1358,10 +1374,10 @@ void main(){
     vec3 cleanCol = bg;
     vec3 cleanPre = vec3(0.0);
     float cleanBad = 0.0;
-    if (hit && alpha > 0.0){
-      vec3 pHit = ro + rd*t;
-      vec3 sc = shadeClean(pHit, rd, bg, cleanPre, cleanBad);
-      cleanCol = mix(bg, sc, 1.0);
+    if (shadeHit && alpha > 0.0){
+      vec3 pHit = ro + shadeRd*shadeT;
+      vec3 sc = shadeClean(pHit, shadeRd, bg, cleanPre, cleanBad);
+      cleanCol = sc;
     }
     if (uDebug == 41){ O = vec4(cleanBad > 0.5 ? vec3(1.0,0.0,1.0) : vec3(0.0), 1.0); return; }
     if (uDebug == 42){ O = vec4(0.5 + 0.5*cleanNormal(ro + rd*t) * (hit ? 1.0 : 0.0), 1.0); return; }
@@ -1371,13 +1387,8 @@ void main(){
     if (uDebug == 44){ O = vec4(toSRGB(clamp(cleanPre, 0.0, 1.0)), 1.0); return; }
     if (uRenderer < 1.5){
       if (uTransp > 0.5){
-        vec3 bgDispC;
-        if (uOptV1 > 0.5 && uIso != 12){
-          vec3 xe2 = max(toLin(bg), 0.0) * uExposure;
-          vec3 md2 = mix(clamp(xe2, 0.0, 1.0), acesFit(xe2), uRolloff);
-          bgDispC = toSRGB(md2*(1.0 - uLift) + vec3(uLift));
-        } else bgDispC = bg;
-        O = vec4(clamp(cleanCol - bgDispC*(1.0 - alpha), 0.0, 1.0), clamp(alpha, 0.0, 1.0));
+        float aOut = clamp(alpha, 0.0, 1.0);
+        O = vec4(clamp(cleanCol * aOut, 0.0, 1.0), aOut);
       } else {
         O = vec4(mix(bg, cleanCol, alpha), 1.0);
       }
@@ -1746,7 +1757,7 @@ void main(){
      shadow is coming out of this shader; if this is pure black outside the
      O and a shadow still appears on the page, the shadow is added outside
      the shader (CSS/Framer). Runs before every other debug branch. */
-  if (uAlphaDebug > 0.5){ O = vec4(vec3(clamp(alpha, 0.0, 1.0)), 1.0); return; }
+
 
   if (uDebug > 0){
     bool bad = inv1(dFresid)||inv1(dEsteps)||inv1(dEresid)||inv1(dL)||inv1(dTIR)

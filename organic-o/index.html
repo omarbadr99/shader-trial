@@ -574,7 +574,11 @@ float sdEqTri(vec2 p, float r){
   p.y = p.y + r/k;
   if (p.x + k*p.y > 0.0) p = vec2(p.x - k*p.y, -k*p.x - p.y)*0.5;
   p.x -= clamp(p.x, -2.0*r, 0.0);
-  return -length(p)*sign(p.y);
+  /* sign() returns 0 at p.y == 0, which would make this return exactly 0 —
+     a value the tracer classifies as INSIDE. Exact cancellation is reachable
+     here because p.y = p.y + r/k sits on a line. Never return the zero case;
+     the zero SURFACE is unchanged. */
+  return -length(p) * (p.y >= 0.0 ? 1.0 : -1.0);
 }
 
 /* signed distance from a shape-space point to the ring path.
@@ -804,6 +808,22 @@ TR traceFrontInner(vec3 ro, vec3 rd, float tStart, float tEnd){
 
 /* Wrapper: measures how well the returned position actually satisfies the
    surface equation, so a bad refinement can be SEEN rather than assumed. */
+/* DIAGNOSTIC ONLY: deterministic dense scan for the FIRST positive->negative
+   crossing. Independent of sphere tracing, so disagreement with traceFront is
+   an algorithmic fact, not a precision effect. */
+bool denseTrace(vec3 ro, vec3 rd, float tStart, float tEnd, out float tOut){
+  tOut = 0.0;
+  float prevT = tStart, prevF = fieldRaw(ro + rd*tStart);
+  if (prevF <= 0.0){ tOut = tStart; return true; }
+  for (int i=1; i<=512; i++){
+    float tt = tStart + (tEnd - tStart) * float(i) / 512.0;
+    float f = fieldRaw(ro + rd*tt);
+    if (prevF > 0.0 && f <= 0.0){ tOut = refineEntry(ro, rd, prevT, tt); return true; }
+    prevT = tt; prevF = f;
+  }
+  return false;
+}
+
 TR traceFront(vec3 ro, vec3 rd, float tStart, float tEnd){
   TR r = traceFrontInner(ro, rd, tStart, tEnd);
   /* proof 4 has no entry face, so its residual is not an error signal */
@@ -1333,6 +1353,60 @@ void main(){
      These return here, before normals, exit marching, refraction, volume
      integration, hashes, environment or tone mapping run, so what they show
      cannot be coloured by anything downstream. */
+  if (uDebug >= 50 && uDebug <= 56){
+    vec3 dcx = vec3(0.0);
+    if (uDebug==50 || uDebug==51 || uDebug==52){
+      float tD; bool hD = denseTrace(ro, rd, tStart, tEndG, tD);
+      if (uDebug==50){                                   // |t production - t dense|
+        float dt = (hit && hD) ? abs(t - tD) : 0.0;
+        dcx = (hit != hD) ? vec3(1.0, 0.0, 1.0)          // classification disagreement
+            : vec3(clamp(dt * 200.0, 0.0, 1.0));         // amplified position error
+      } else if (uDebug==51){                            // coverage XOR
+        dcx = (hit != hD) ? vec3(1.0, 0.0, 1.0) : vec3(0.0, hit ? 0.25 : 0.0, 0.0);
+      } else {                                           // 52: dense binary hit
+        dcx = vec3(hD ? 1.0 : 0.0);
+      }
+    }
+    else if (uDebug==53){                                // CONSTANT HIT
+      dcx = vec3(hit ? 1.0 : 0.0);
+    }
+    else if (uDebug==54){                                // front step count, high contrast
+      dcx = vec3(fract(frontSteps / 16.0));
+    }
+    else if (uDebug==55){                                // ring theta + the +-PI seam
+      vec3 ph = ro + rd*(hit ? t : tAt);
+      vec2 psq = rot2(ph.xy, -uSpinPhase);
+      float th = atan(psq.y, psq.x);
+      float seam = smoothstep(0.06, 0.0, abs(abs(th) - 3.14159265));
+      dcx = hit ? mix(vec3(th/6.2832 + 0.5), vec3(1.0, 0.0, 0.0), seam) : vec3(0.0);
+    }
+    else if (uDebug==57){        // sign(p.y) degeneracy encountered on this ray
+      dcx = vec3(0.0, hit ? 0.25 : 0.0, 0.0);
+    }
+    else if (uDebug==58){        // hit whose field value was EXACTLY zero
+      float fh = hit ? fieldRaw(ro + rd*t) : 1.0;
+      dcx = (hit && fh == 0.0) ? vec3(0.0,1.0,1.0) : vec3(0.0, hit ? 0.25 : 0.0, 0.0);
+    }
+    else if (uDebug==56){                                // STRUCTURAL SEAMS
+      vec3 ph = ro + rd*(hit ? t : tAt);
+      vec2 psq = rot2(ph.xy, -uSpinPhase);
+      vec2 qh  = rot2(psq, -uStretchA);
+      qh = vec2(qh.x/(1.0 + uStretch), qh.y*(1.0 + uStretch*0.7));
+      float a  = atan(qh.y, qh.x) - 1.5708;
+      /* sdEqTri internal branch boundary: p.x + k*p.y > 0 after the fold */
+      float kk = 1.7320508;
+      float rr = (uRing - 0.58*uRing) * 1.1547;
+      vec2 pt = qh; pt.x = abs(pt.x) - rr; pt.y = pt.y + rr/kk;
+      float branch = pt.x + kk*pt.y;
+      float bBand = smoothstep(0.02, 0.0, abs(branch));          // red: triangle branch
+      float aBand = smoothstep(0.012, 0.0, abs(qh.x));            // green: abs() symmetry
+      float c0=cos(a), c1=cos(a-2.0944), c2=cos(a+2.0944);
+      float w = (uCornerW.x*c0*c0 + uCornerW.y*c1*c1 + uCornerW.z*c2*c2)*0.6667;
+      float lobe = smoothstep(0.02, 0.0, abs(fract(a/2.0944 + 0.5) - 0.5)); // corner extrema
+      dcx = hit ? vec3(bBand, aBand, lobe) : vec3(0.0);
+    }
+    O = vec4(dcx, 1.0); return;
+  }
   if (uDebug >= 25 && uDebug <= 36){
     vec3 dcf = vec3(0.0);
     if      (uDebug==25) dcf = vec3(hit ? 1.0 : 0.0);                       // binary hit

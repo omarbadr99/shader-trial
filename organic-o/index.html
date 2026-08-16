@@ -466,7 +466,7 @@
    Visible badge (embed mode included) + console line on startup.
    Hide with ?badge=0, or postMessage {type:"organicO", badge:false}.
 ============================================================ */
-const BUILD_ID     = "CLEAN-14";
+const BUILD_ID     = "DITHER-15";
 const BUILD_COMMIT   = "local-clean14";
 const BUILD_TIME     = "2026-08-15T05:45:00Z";
 const BUILD_SHA      = "clean14";   // sha256-12 of this file with
@@ -889,6 +889,19 @@ uniform float uProbeRaw; // 1 = write RAW float values for uDebug's channel
                          // (rendered to an RGBA32F target and read back by
                          // the pixel probe; never active in normal drawing)
 
+/* ORDERED DITHER against 8-bit banding.
+   The shell is a very flat, very bright gradient: measured 241k bright
+   pixels spanning only 51 distinct output levels, i.e. wide plateaus
+   separated by single-level steps, which display as fine parallel contour
+   lines. Adding +-0.5/255 before quantisation turns each hard step into a
+   dispersed boundary. Interleaved gradient noise is a deterministic
+   function of gl_FragCoord alone — no frame seed, no hash, so it is stable
+   in time and cannot reproduce the correlated diagonal striping that a
+   screen-space hash caused. Amplitude is half a code value: below the
+   threshold of visibility, and it changes no colour, shape or highlight. */
+float ignDither(vec2 p){
+  return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+}
 vec3 toLin(vec3 c){ return pow(max(c, vec3(0.0)), vec3(2.2)); }
 vec3 toSRGB(vec3 c){ return pow(max(c, vec3(0.0)), vec3(1.0/2.2)); }
 vec3 acesFit(vec3 x){
@@ -1933,6 +1946,8 @@ void main(){
 
   float g = hash(gl_FragCoord.xy) - 0.5;
   col += g * uGrain * (0.35 + 0.65*alpha);
+  /* dither the legacy path's 8-bit write too */
+  col += (ignDither(gl_FragCoord.xy) - 0.5) / 255.0;
 
   /* last-resort guard: never emit a NaN/Inf pixel (they render as white/black
      specks). Fall back to the local background so it is invisible. */

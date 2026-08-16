@@ -466,10 +466,10 @@
    Visible badge (embed mode included) + console line on startup.
    Hide with ?badge=0, or postMessage {type:"organicO", badge:false}.
 ============================================================ */
-const BUILD_ID     = "DITHER-15";
-const BUILD_COMMIT   = "local-clean14";
-const BUILD_TIME     = "2026-08-15T05:45:00Z";
-const BUILD_SHA      = "clean14";   // sha256-12 of this file with
+const BUILD_ID     = "RENDERER-16";
+const BUILD_COMMIT   = "local-renderer16";
+const BUILD_TIME     = "2026-08-16T15:10:00Z";
+const BUILD_SHA      = "renderer16";   // sha256-12 of this file with
                                         // the stamps blanked: verifiable
                                         // without trusting git at all
 console.log(
@@ -1506,25 +1506,34 @@ void main(){
          normal across the crease so it reads as a smooth micro-bend, not a
          line, at any resolution. */
       float epsN = clamp(0.9*wppH, 0.007, 0.02) * (1.0 + 0.5*uFluid);
-      /* Normal with a scale-invariant degenerate-gradient fallback. Toward the
-         SDF's medial axis the gradient magnitude collapses; normalizing that
-         tiny, noisy (or NaN) vector was the dotted white/black specks. Compare
-         a FINE gradient to a COARSE one (4x epsilon, which averages across the
-         crease and stays well-defined). Where the fine gradient is anomalously
-         small vs the coarse expectation, blend smoothly to the coarse normal.
-         This PREVENTS the bad normal — no detect-after-NaN, which is
-         unreliable under Metal fast-math. */
+      /* Normal from the COARSE (4x epsilon) tetrahedral gradient only.
+         There used to be a confidence blend here: a fine gradient was compared
+         against the coarse one and mixed in where it looked healthy. The
+         comparison was mis-scaled. For the tetrahedral stencil, sum(v_i v_i^T)
+         = 4*eps^2*I, so |grad| is proportional to eps^2 and the coarse
+         gradient (4x eps) is 16x the fine one for ANY locally linear field —
+         not 4x. The code divided by 0.25 rather than 0.0625, so the ratio fed
+         to smoothstep(0.2, 0.7, .) was ~0.25 instead of ~1.0: measured on the
+         production dials, gm/gcm has median 0.0648 (theory 0.0625) and the
+         ratio lands in 0.236 .. 0.331 — parked on the smoothstep's lower knee.
+         The blend weight therefore never did its job (median 0.039, never
+         above 0.17) and instead became a spatially varying dial swinging 11x
+         across the shell, mixing in a normal that differs from the coarse one
+         by a median 6.4 degrees. Both gm and gcm are differences of nearly
+         equal map() values — catastrophic cancellation — so that dial is also
+         the most precision-sensitive quantity in the shader, sitting on the
+         steepest part of a step function, in the stage that the first-bad-
+         stage sweep named. Removing it changes the shipped normal by a median
+         0.24 deg (p99 0.86, max 1.48) and removes the modulation entirely.
+         The coarse gradient is the well-conditioned one: 4x epsilon averages
+         across the field's C1 creases and keeps its own degenerate fallback. */
       vec2 eN = vec2(epsN, -epsN);
       float g1 = map(p+eN.xyy), g2 = map(p+eN.yyx), g3 = map(p+eN.yxy), g4 = map(p+eN.xxx);
-      vec3 grad = eN.xyy*g1 + eN.yyx*g2 + eN.yxy*g3 + eN.xxx*g4;
       vec2 eC = 4.0*eN;
       float c1 = map(p+eC.xyy), c2 = map(p+eC.yyx), c3 = map(p+eC.yxy), c4 = map(p+eC.xxx);
       vec3 gradC = eC.xyy*c1 + eC.yyx*c2 + eC.yxy*c3 + eC.xxx*c4;
-      float gm = length(grad), gcm = length(gradC);
-      vec3 nCoarse = gcm > 1e-7 ? gradC/gcm : -rd;
-      vec3 nFine   = gm  > 1e-7 ? grad/gm   : nCoarse;
-      float conf = smoothstep(0.2, 0.7, gm / max(gcm*0.25, 1e-7));  // fine vs expected
-      vec3 n = normalize(mix(nCoarse, nFine, conf));
+      float gcm = length(gradC);
+      vec3 n = gcm > 1e-7 ? gradC/gcm : -rd;
       dN = n; dKap = (g1+g2+g3+g4)*0.25/(epsN*epsN*uSafe*uFlat);
       float ndv = clamp(dot(n, -rd), 0.0, 1.0);
 
@@ -2012,7 +2021,7 @@ const U = {};
  "uOptV1","uExposure","uRolloff","uLift","uShellTh","uShellCl","uCoreSoft",
  "uFresStr","uF0","uReflStr","uStudioRot","uStripW","uStripSoft",
  "uCurvResp","uHiWidth","uHiInt","uIOR","uRefrStr","uDisp","uRefrFull","uDebug","uIso","uProbeRaw","uBoundR",
- "uTransp","uAlphaDebug","uPathAA","uAAThr","uSpeckFix","uForceSpeck","uSeedU"]
+ "uTransp","uAlphaDebug","uPathAA","uAAThr","uSpeckFix","uForceSpeck","uSeedU","uRenderer"]
  .forEach(n => U[n] = gl.getUniformLocation(prog, n));
 
 /* ============================================================

@@ -645,9 +645,26 @@ vec3 fluidP3(float th){
     vec4 B = uPressB[i];
     float d   = th - B.x;
     float lag = uGeoLag * B.w;
-    P.x += B.z * pow(0.5 + 0.5*cos(d + lag),     B.y);
-    P.y += B.z * pow(0.5 + 0.5*cos(d + lag*1.6), B.y);
-    P.z += B.z * pow(0.5 + 0.5*cos(d + lag*2.3), B.y);
+    /* THE RADIAL HAIRLINES.
+       0.5 + 0.5*cos(x) is mathematically in [0,1] and hits EXACTLY 0 where
+       cos(x) = -1. pow() is undefined in GLSL for a negative base, and Metal's
+       fast-math cos() is a polynomial approximation that can return slightly
+       below -1 -- so the base goes negative and pow returns NaN. That NaN
+       lands in P3, which feeds pd (centreline) and thickF (thickness), i.e.
+       the GEOMETRY field, so it corrupts the normal, chord and optical depth
+       while leaving the hit/alpha classification intact.
+       The zero sits at a fixed WORLD angle (d = th - B.x, th = atan(p.y,p.x)),
+       which is a RAY from the origin: a radial line through the object. Three
+       channels per blob at lags x1, x1.6, x2.3 give three lines each, drifting
+       independently as the blobs move -- exactly the reported artifact, and
+       exactly why turning Fluid coupling to 0 removed it (fluidP3 is skipped).
+       SwiftShader's cos is correctly rounded, which is why no local capture
+       ever reproduced this.
+       max() costs nothing and cannot change the image: the clamp floor raised
+       to the largest exponent in use is ~1e-49, far below float range. */
+    P.x += B.z * pow(max(0.5 + 0.5*cos(d + lag),     1e-7), B.y);
+    P.y += B.z * pow(max(0.5 + 0.5*cos(d + lag*1.6), 1e-7), B.y);
+    P.z += B.z * pow(max(0.5 + 0.5*cos(d + lag*2.3), 1e-7), B.y);
   }
   return P - vec3(uPMean);
 }

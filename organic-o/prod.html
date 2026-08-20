@@ -575,14 +575,13 @@ const ph = { t:0, spin:0, org:0, morph:0, stretchA:0.8 };
 let blobs = [];
 let blobSeq = 0;
 let viewYaw = 0, viewPitch = 0;
-const drag = { yaw:0, pitch:0 };
 const blobA   = new Float32Array(MAXB*4);
 const blobAbs = new Float32Array(MAXB*3);
 const pressB  = new Float32Array(MAXB*4);
 let pMeanLast = 0, pressN = 0;
 let last = performance.now(), frameN = 0;
 let TRANSPARENT = window.__ORGANIC_TRANSPARENT__ === true;
-let EMBED_DPR = 1, ZOOM_MUL = 1, PAUSED = false, INTERACT = false;
+let EMBED_DPR = 1, ZOOM_MUL = 1, PAUSED = false;
 let extA = null, extB = null, extProgress = 0;
 const EASE_SMOOTH = u => u*u*(3 - 2*u);
 const lerp = (a,b,t) => a + (b-a)*t;
@@ -683,8 +682,8 @@ function drawScene(W, H){
   gl.uniform1ui(U.uSeedU, (frameN >>> 0));
   gl.uniform1f(U.uSpeckFix, 1);
   gl.uniform1f(U.uForceSpeck, 0);
-  gl.uniform1f(U.uYaw,   viewYaw + drag.yaw + tiltYaw);
-  gl.uniform1f(U.uPitch, viewPitch + drag.pitch + tiltPitch);
+  gl.uniform1f(U.uYaw,   viewYaw + tiltYaw);
+  gl.uniform1f(U.uPitch, viewPitch + tiltPitch);
   gl.uniform1f(U.uSpinPhase, ph.spin);
   gl.uniform1f(U.uOrgPhase, ph.org);
   gl.uniform1f(U.uZoom, S.zoom * ZOOM_MUL);
@@ -798,21 +797,6 @@ function frame(now){
 }
 let raf = 0;
 
-/* ---------- drag to tilt (only when the host enables it) ---------- */
-let dragging = false, lastX = 0, lastY = 0;
-canvas.addEventListener("pointerdown", e => {
-  if (!INTERACT) return;
-  dragging = true; lastX = e.clientX; lastY = e.clientY;
-  canvas.setPointerCapture(e.pointerId);
-});
-canvas.addEventListener("pointermove", e => {
-  if (!dragging) return;
-  drag.yaw   += (e.clientX - lastX) * 0.006;
-  drag.pitch += (e.clientY - lastY) * 0.006;
-  lastX = e.clientX; lastY = e.clientY;
-});
-canvas.addEventListener("pointerup", e => { dragging = false; });
-
 /* ---------- host bridge ---------- */
 addEventListener("message", ev => {
   const d = ev.data; if (!d || d.type !== "organicO") return;
@@ -822,12 +806,10 @@ addEventListener("message", ev => {
   if (typeof d.zoomMul === "number" && isFinite(d.zoomMul)) ZOOM_MUL = Math.max(0.2, Math.min(5, d.zoomMul));
   if (typeof d.paused === "boolean") PAUSED = d.paused;
   if (typeof d.transparent === "boolean") TRANSPARENT = d.transparent;
-  if (typeof d.interactive === "boolean"){
-    INTERACT = d.interactive;
-    canvas.style.pointerEvents = INTERACT ? "auto" : "none";
-  }
 });
 
+/* The O is decoration: it never takes a pointer event, so it never
+   steals a click, a scroll or a text selection from the page. */
 canvas.style.pointerEvents = "none";
 resize();
 raf = requestAnimationFrame(frame);

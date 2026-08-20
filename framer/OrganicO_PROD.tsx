@@ -1,12 +1,13 @@
 // Organic O — Framer production component
-// BUILD: PROD-1
+// BUILD: PROD-2
 //
 // A WebGL "O" whose shape, material and camera morph from preset A to preset B
 // as the visitor scrolls between two sections.
 //
 // This is the PRODUCTION build. It contains no diagnostics, no alternate
-// renderers, no authoring UI and no instrumentation. The fragment shader was
-// reduced from 74,008 to 17,832 bytes and verified to render
+// renderers, no authoring UI, no instrumentation and no pointer handling --
+// the O is decoration and never takes an event. The fragment shader was
+// reduced from 74,008 to 17,865 bytes and verified to render
 // BIT-IDENTICALLY to the development build at five scroll positions (0 pixels
 // of 176,400 differing per frame).
 
@@ -595,14 +596,13 @@ const ph = { t:0, spin:0, org:0, morph:0, stretchA:0.8 };
 let blobs = [];
 let blobSeq = 0;
 let viewYaw = 0, viewPitch = 0;
-const drag = { yaw:0, pitch:0 };
 const blobA   = new Float32Array(MAXB*4);
 const blobAbs = new Float32Array(MAXB*3);
 const pressB  = new Float32Array(MAXB*4);
 let pMeanLast = 0, pressN = 0;
 let last = performance.now(), frameN = 0;
 let TRANSPARENT = window.__ORGANIC_TRANSPARENT__ === true;
-let EMBED_DPR = 1, ZOOM_MUL = 1, PAUSED = false, INTERACT = false;
+let EMBED_DPR = 1, ZOOM_MUL = 1, PAUSED = false;
 let extA = null, extB = null, extProgress = 0;
 const EASE_SMOOTH = u => u*u*(3 - 2*u);
 const lerp = (a,b,t) => a + (b-a)*t;
@@ -703,8 +703,8 @@ function drawScene(W, H){
   gl.uniform1ui(U.uSeedU, (frameN >>> 0));
   gl.uniform1f(U.uSpeckFix, 1);
   gl.uniform1f(U.uForceSpeck, 0);
-  gl.uniform1f(U.uYaw,   viewYaw + drag.yaw + tiltYaw);
-  gl.uniform1f(U.uPitch, viewPitch + drag.pitch + tiltPitch);
+  gl.uniform1f(U.uYaw,   viewYaw + tiltYaw);
+  gl.uniform1f(U.uPitch, viewPitch + tiltPitch);
   gl.uniform1f(U.uSpinPhase, ph.spin);
   gl.uniform1f(U.uOrgPhase, ph.org);
   gl.uniform1f(U.uZoom, S.zoom * ZOOM_MUL);
@@ -818,21 +818,6 @@ function frame(now){
 }
 let raf = 0;
 
-/* ---------- drag to tilt (only when the host enables it) ---------- */
-let dragging = false, lastX = 0, lastY = 0;
-canvas.addEventListener("pointerdown", e => {
-  if (!INTERACT) return;
-  dragging = true; lastX = e.clientX; lastY = e.clientY;
-  canvas.setPointerCapture(e.pointerId);
-});
-canvas.addEventListener("pointermove", e => {
-  if (!dragging) return;
-  drag.yaw   += (e.clientX - lastX) * 0.006;
-  drag.pitch += (e.clientY - lastY) * 0.006;
-  lastX = e.clientX; lastY = e.clientY;
-});
-canvas.addEventListener("pointerup", e => { dragging = false; });
-
 /* ---------- host bridge ---------- */
 addEventListener("message", ev => {
   const d = ev.data; if (!d || d.type !== "organicO") return;
@@ -842,12 +827,10 @@ addEventListener("message", ev => {
   if (typeof d.zoomMul === "number" && isFinite(d.zoomMul)) ZOOM_MUL = Math.max(0.2, Math.min(5, d.zoomMul));
   if (typeof d.paused === "boolean") PAUSED = d.paused;
   if (typeof d.transparent === "boolean") TRANSPARENT = d.transparent;
-  if (typeof d.interactive === "boolean"){
-    INTERACT = d.interactive;
-    canvas.style.pointerEvents = INTERACT ? "auto" : "none";
-  }
 });
 
+/* The O is decoration: it never takes a pointer event, so it never
+   steals a click, a scroll or a text selection from the page. */
 canvas.style.pointerEvents = "none";
 resize();
 raf = requestAnimationFrame(frame);
@@ -860,8 +843,8 @@ const PAGE_T = PAGE.replace(
 
 // The dialled-in looks, baked in as the default A -> B journey.
 const BUILT_IN = {
-    t1: {"dials": {"debug": 0, "iso": 0, "ink": 0.95, "gravity": 0.82, "crange": 0.6, "light": 0.9, "glare": 0.85, "speed": 3.65, "fluid": 0.74, "fcenter": 0.19, "fthick": 0.47, "fdepth": 0.235, "flag": 0.35, "fsmooth": 0.72, "spin": 0.16, "tilt": 0.45, "tiltspd": 1, "wob": 0.45, "wobspd": 0.5, "morph": 0.79, "morphspd": 1.89, "ring": 0.71, "lobe": 0.17, "stretch": 0.14, "tube": 0.175, "flat": 0.7, "taper": 0.28, "zoom": 3.49, "frost": 0.18, "wall": 0.2, "speckle": 0, "soft": 0.9, "grain": 0, "bg": 0.955, "optv1": 1, "refrfull": 1, "exposure": 1.15, "rolloff": 0.85, "lift": 0.015, "shellth": 0.16, "shellcl": 0.7, "coresoft": 0.18, "fresstr": 1, "fresf0": 0.04, "reflstr": 1, "studiorot": 0.5, "stripw": 0.22, "strips": 0.16, "curvresp": 0.6, "hiwidth": 0.09, "hiint": 1, "ior": 1.45, "refrstr": 0.7, "disp": 0.012}, "view": {"yaw": 0, "pitch": 0}, "blobs": [{"color": "#101c33", "size": 0.55, "speed": 0.32, "amt": 1, "tail": 0.6, "drift": 0.45, "follow": false}, {"color": "#386bbc", "size": 0.85, "speed": -0.15, "amt": 0.4, "tail": 0.5, "drift": 0.7, "follow": false}]},
-    t2: {"dials": {"debug": 0, "iso": 0, "ink": 0.95, "gravity": 0.82, "crange": 0.6, "light": 0.9, "glare": 0.85, "speed": 3.65, "fluid": 0.74, "fcenter": 0.19, "fthick": 0.47, "fdepth": 0.235, "flag": 0.35, "fsmooth": 0.72, "spin": 0.16, "tilt": 0.45, "tiltspd": 1, "wob": 0.64, "wobspd": 0.65, "morph": 0.84, "morphspd": 0.4, "ring": 0.71, "lobe": 0.17, "stretch": 0.14, "tube": 0.175, "flat": 0.7, "taper": 0.19, "zoom": 0.5, "frost": 0, "wall": 0.2, "speckle": 0, "soft": 0.9, "grain": 0, "bg": 0.955, "optv1": 1, "refrfull": 1, "exposure": 1.15, "rolloff": 0.85, "lift": 0.015, "shellth": 0.16, "shellcl": 0.7, "coresoft": 0.18, "fresstr": 1, "fresf0": 0.04, "reflstr": 1, "studiorot": 0.5, "stripw": 0.22, "strips": 0.16, "curvresp": 0.6, "hiwidth": 0.09, "hiint": 1, "ior": 1.45, "refrstr": 0.7, "disp": 0.012}, "view": {"yaw": 2.54591796875, "pitch": 0.0007421874999999742}, "blobs": [{"color": "#101c33", "size": 0.15, "speed": 0.35, "amt": 0, "tail": 0.6, "drift": 0.45, "follow": false}, {"color": "#386bbc", "size": 0.15, "speed": -0.15, "amt": 0, "tail": 0.5, "drift": 0.7, "follow": false}]},
+    t1: {"dials": {"debug": 0, "iso": 0, "ink": 0.95, "gravity": 0.82, "crange": 0.6, "light": 0.9, "glare": 0.85, "speed": 3.65, "fluid": 0, "fcenter": 0.19, "fthick": 0.47, "fdepth": 0.235, "flag": 0.35, "fsmooth": 0.72, "spin": 0.16, "tilt": 0.45, "tiltspd": 1, "wob": 0.45, "wobspd": 0.5, "morph": 0.79, "morphspd": 1.89, "ring": 0.71, "lobe": 0.17, "stretch": 0.14, "tube": 0.175, "flat": 0.7, "taper": 0.28, "zoom": 3.49, "frost": 0.18, "wall": 0.2, "speckle": 0, "soft": 0.9, "grain": 0, "bg": 0.955, "optv1": 1, "refrfull": 1, "exposure": 1.15, "rolloff": 0.85, "lift": 0.015, "shellth": 0.16, "shellcl": 0.7, "coresoft": 0.18, "fresstr": 1, "fresf0": 0.04, "reflstr": 1, "studiorot": 0.5, "stripw": 0.22, "strips": 0.16, "curvresp": 0.6, "hiwidth": 0.09, "hiint": 1, "ior": 1.45, "refrstr": 0.7, "disp": 0.012}, "view": {"yaw": 0, "pitch": 0}, "blobs": [{"color": "#101c33", "size": 0.55, "speed": 0.32, "amt": 1, "tail": 0.6, "drift": 0.45, "follow": false}, {"color": "#386bbc", "size": 0.85, "speed": -0.15, "amt": 0.4, "tail": 0.5, "drift": 0.7, "follow": false}]},
+    t2: {"dials": {"debug": 0, "iso": 0, "ink": 0.95, "gravity": 0.82, "crange": 0.6, "light": 0.9, "glare": 0.85, "speed": 3.65, "fluid": 0, "fcenter": 0.19, "fthick": 0.47, "fdepth": 0.235, "flag": 0.35, "fsmooth": 0.72, "spin": 0.16, "tilt": 0.45, "tiltspd": 1, "wob": 0.64, "wobspd": 0.65, "morph": 0.84, "morphspd": 0.4, "ring": 0.71, "lobe": 0.17, "stretch": 0.14, "tube": 0.175, "flat": 0.7, "taper": 0.19, "zoom": 0.5, "frost": 0, "wall": 0.2, "speckle": 0, "soft": 0.9, "grain": 0, "bg": 0.955, "optv1": 1, "refrfull": 1, "exposure": 1.15, "rolloff": 0.85, "lift": 0.015, "shellth": 0.16, "shellcl": 0.7, "coresoft": 0.18, "fresstr": 1, "fresf0": 0.04, "reflstr": 1, "studiorot": 0.5, "stripw": 0.22, "strips": 0.16, "curvresp": 0.6, "hiwidth": 0.09, "hiint": 1, "ior": 1.45, "refrstr": 0.7, "disp": 0.012}, "view": {"yaw": 2.54591796875, "pitch": 0.0007421874999999742}, "blobs": [{"color": "#101c33", "size": 0.15, "speed": 0.35, "amt": 0, "tail": 0.6, "drift": 0.45, "follow": false}, {"color": "#386bbc", "size": 0.15, "speed": -0.15, "amt": 0, "tail": 0.5, "drift": 0.7, "follow": false}]},
 }
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
@@ -879,7 +862,7 @@ export default function OrganicO(props) {
     const {
         presetAName = "t1", presetBName = "t2",
         presetAJson = "", presetBJson = "",
-        interactive = false, scrollStart = 0, scrollEnd = 1, quality = 1,
+        scrollStart = 0, scrollEnd = 1, quality = 1,
         transparentBg = true, zoomMul = 1, style,
     } = props
 
@@ -927,9 +910,9 @@ export default function OrganicO(props) {
     if (live && !srcDoc.current) srcDoc.current = transparentBg ? PAGE_T : PAGE
 
     const sendConfig = useCallback(() => {
-        post({ a: A, b: B, interactive, dpr: quality,
+        post({ a: A, b: B, dpr: quality,
                transparent: transparentBg, zoomMul })
-    }, [post, A, B, interactive, quality, transparentBg, zoomMul])
+    }, [post, A, B, quality, transparentBg, zoomMul])
     useEffect(() => { sendConfig() }, [sendConfig])
 
     // scroll -> at most one message per animation frame
@@ -986,7 +969,9 @@ export default function OrganicO(props) {
                         width: "100%", height: "100%", border: "none",
                         background: "transparent", colorScheme: "normal",
                         display: "block",
-                        pointerEvents: interactive ? "auto" : "none",
+                        /* Decoration only: never intercepts a click or a
+                           scroll from the page underneath. */
+                        pointerEvents: "none",
                         ...noShadow,
                     }}
                 />
@@ -1000,7 +985,6 @@ addPropertyControls(OrganicO, {
     presetBName: { type: ControlType.String, title: "Preset B", placeholder: "t2 (built-in)" },
     presetAJson: { type: ControlType.String, title: "Preset A JSON", displayTextArea: true, placeholder: "(optional) paste t1 JSON" },
     presetBJson: { type: ControlType.String, title: "Preset B JSON", displayTextArea: true, placeholder: "(optional) paste t2 JSON" },
-    interactive: { type: ControlType.Boolean, title: "Interactive", defaultValue: false, enabledTitle: "On", disabledTitle: "Off" },
     scrollStart: { type: ControlType.Number, title: "Scroll start", min: 0, max: 1, step: 0.01, defaultValue: 0 },
     scrollEnd: { type: ControlType.Number, title: "Scroll end", min: 0, max: 1, step: 0.01, defaultValue: 1 },
     quality: { type: ControlType.Number, title: "Quality (DPR)", min: 1, max: 2, step: 0.25, defaultValue: 1, description: "1 = one shader pixel per CSS pixel. Cost scales with the SQUARE of this: 2 is four times the work." },

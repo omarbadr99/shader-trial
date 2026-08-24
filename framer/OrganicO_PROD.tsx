@@ -791,6 +791,134 @@ function drawScene(W, H){
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
+/* ---------- silhouette: tell the host where the O actually is ----------
+   The host lives outside this iframe and cannot see the canvas, so once per
+   frame we draw the O again as a tiny black-and-white coverage map and read
+   off, per row, where the shape starts and stops. The shader already has that
+   mode: uAlphaDebug returns \`alpha = hit ? 1 : 0\`, so this is the same program
+   drawn a second time with one uniform flipped and every other uniform left
+   exactly as drawScene() set it.
+
+   The map keeps the canvas's aspect ratio on purpose. The projection is
+   uv = (gl_FragCoord.xy - 0.5*uRes) / uRes.y, so equal aspect means the map
+   frames the identical view and its rows and columns fall on the canvas's own
+   coordinates -- the host only has to scale by its width.
+
+   Readback is asynchronous. A plain readPixels here would stall the GPU every
+   frame, which is the one thing this must not cost: we fence a copy into a
+   PIXEL_PACK_BUFFER and collect it on a later frame. That leaves the host one
+   frame behind the O, which is sub-pixel at wobble speed.
+
+   Off unless the host asks for it, so nothing that does not use this pays for
+   it. */
+/* 64 rows, not 96. Every pixel of this map lands on or near the O, where a ray
+   actually marches, while most of the real canvas is cheap background the bound
+   sphere rejects -- so the map costs far more per pixel than its share of the
+   pixel count suggests. Measured at 900x600: 96 rows is 2.6% of the pixels but
+   5.5-7.9% of the time. 64 rows is 2.25x less work, and still puts two samples
+   across a 26px line of text at a normal viewport height. */
+const SIL_ROWS = 64;
+let SIL_ON = false;
+let silFB = null, silTex = null, silPBO = null, silSync = null;
+let silW = 0, silH = 0, silBytes = null;
+
+function silResize(){
+  const h = SIL_ROWS;
+  const w = Math.max(8, Math.round(h * canvas.width / Math.max(1, canvas.height)));
+  if (w === silW && h === silH && silFB) return;
+  silW = w; silH = h;
+  if (silTex) gl.deleteTexture(silTex);
+  if (silFB)  gl.deleteFramebuffer(silFB);
+  if (silPBO) gl.deleteBuffer(silPBO);
+  if (silSync){ gl.deleteSync(silSync); silSync = null; }
+  silTex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, silTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  silFB = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, silFB);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, silTex, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  silPBO = gl.createBuffer();
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, silPBO);
+  gl.bufferData(gl.PIXEL_PACK_BUFFER, w*h*4, gl.STREAM_READ);
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+  silBytes = new Uint8Array(w*h*4);
+}
+
+/* Collect the PREVIOUS frame's map, if the GPU has finished with it. */
+function silCollect(){
+  if (!silSync) return;
+  /* SYNC_FLUSH_COMMANDS_BIT matters: without it the driver is allowed never to
+     signal a fence whose commands are still sitting unflushed in the queue, and
+     the poll spins forever. Timeout stays 0 so this never blocks. */
+  const st = gl.clientWaitSync(silSync, gl.SYNC_FLUSH_COMMANDS_BIT, 0);
+  if (st !== gl.ALREADY_SIGNALED && st !== gl.CONDITION_SATISFIED) return;
+  gl.deleteSync(silSync); silSync = null;
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, silPBO);
+  gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, silBytes);
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+  const w = silW, h = silH;
+  const rawL = new Int32Array(h), rawR = new Int32Array(h);
+  for (let i = 0; i < h; i++){
+    /* readPixels hands back rows bottom-up; the host thinks top-down. */
+    const base = (h - 1 - i) * w * 4;
+    let lo = -1, hi = -1;
+    for (let x = 0; x < w; x++)      if (silBytes[base + x*4] > 127){ lo = x; break; }
+    if (lo >= 0)
+      for (let x = w - 1; x >= lo; x--) if (silBytes[base + x*4] > 127){ hi = x; break; }
+    rawL[i] = lo; rawR[i] = hi;
+  }
+  /* Each row samples ONE height, but the host will use it for the whole band
+     between rows. Where the outline is steep the shape is wider inside that
+     band than at the sample, so the raw span can cut into the O by a couple of
+     pixels -- measured at up to 3.7px. Widening every row to cover its
+     neighbours removes that: the reported span is then guaranteed to contain
+     the shape across the band, and errs outward, which only ever pushes text
+     further away. */
+  const edges = new Float32Array(h*2);
+  for (let i = 0; i < h; i++){
+    let lo = -1, hi = -1;
+    for (let k = Math.max(0, i-1); k <= Math.min(h-1, i+1); k++){
+      if (rawL[k] < 0) continue;
+      if (lo < 0 || rawL[k] < lo) lo = rawL[k];
+      if (rawR[k] > hi) hi = rawR[k];
+    }
+    /* One more cell out on each side. The map is a low-resolution sample: a
+       column whose centre falls outside the shape reads empty even when part
+       of it is covered, so the raw span can still sit a pixel or two inside the
+       real outline. A cell of slack bounds that, and every remaining error then
+       points outward. The host's own padding is an order of magnitude larger
+       again, so what is left here does not matter.
+       Fractions of canvas width; -1 for a row the shape does not touch. */
+    if (lo >= 0){ lo = Math.max(0, lo - 1); hi = Math.min(w - 1, hi + 1); }
+    edges[i*2]   = lo < 0 ? -1 : lo / w;
+    edges[i*2+1] = hi < 0 ? -1 : (hi + 1) / w;
+  }
+  parent.postMessage({ type: "organicO:silhouette", rows: h, edges }, "*", [edges.buffer]);
+}
+
+/* Draw this frame's map and fence it. Must run AFTER drawScene(), which leaves
+   every other uniform already set for this frame. */
+function silDraw(){
+  if (silSync) return;              // previous map still in flight; skip a turn
+  silResize();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, silFB);
+  gl.viewport(0, 0, silW, silH);
+  gl.uniform2f(U.uRes, silW, silH);
+  gl.uniform1f(U.uAlphaDebug, 1);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, silPBO);
+  gl.readPixels(0, 0, silW, silH, gl.RGBA, gl.UNSIGNED_BYTE, 0);
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+  silSync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.uniform1f(U.uAlphaDebug, 0);
+}
+
 function frame(now){
   const dt = Math.min((now - last)/1000, 0.05);
   last = now;
@@ -813,7 +941,9 @@ function frame(now){
     b.angle += dts * b.speed * mod;
   }
   resize();
+  if (SIL_ON) silCollect();
   drawScene();
+  if (SIL_ON) silDraw();
   raf = requestAnimationFrame(frame);
 }
 let raf = 0;
@@ -827,6 +957,7 @@ addEventListener("message", ev => {
   if (typeof d.zoomMul === "number" && isFinite(d.zoomMul)) ZOOM_MUL = Math.max(0.2, Math.min(5, d.zoomMul));
   if (typeof d.paused === "boolean") PAUSED = d.paused;
   if (typeof d.transparent === "boolean") TRANSPARENT = d.transparent;
+  if (typeof d.silhouette === "boolean") SIL_ON = d.silhouette;
 });
 
 /* The O is decoration: it never takes a pointer event, so it never

@@ -575,6 +575,22 @@ const ph = { t:0, spin:0, org:0, morph:0, stretchA:0.8 };
 let blobs = [];
 let blobSeq = 0;
 let viewYaw = 0, viewPitch = 0;
+
+/* ---------- cursor lean ----------
+   The O is a background layer with content stacked on top of it, so it can
+   never receive a pointer event: whatever sits above takes the pointer first,
+   and giving this iframe pointer-events:auto would just make it swallow clicks
+   meant for that content. The host therefore watches the cursor on the PAGE and
+   posts it in here, already normalised to this frame's box. The canvas stays
+   pointer-events:none for its whole life.
+
+   x and y arrive in -1..1 across the frame. tx/ty are where the lean wants to
+   be; x/y are where it currently is, eased toward the target so the O drifts
+   rather than snapping. */
+const lean = { tx:0, ty:0, x:0, y:0 };
+let LEAN_AMT = 0.35;
+const LEAN_YAW = 0.30, LEAN_PITCH = 0.20;   // radians at full deflection
+const LEAN_TAU = 0.28;                      // seconds to ease, framerate-free
 const blobA   = new Float32Array(MAXB*4);
 const blobAbs = new Float32Array(MAXB*3);
 const pressB  = new Float32Array(MAXB*4);
@@ -682,8 +698,8 @@ function drawScene(W, H){
   gl.uniform1ui(U.uSeedU, (frameN >>> 0));
   gl.uniform1f(U.uSpeckFix, 1);
   gl.uniform1f(U.uForceSpeck, 0);
-  gl.uniform1f(U.uYaw,   viewYaw + tiltYaw);
-  gl.uniform1f(U.uPitch, viewPitch + tiltPitch);
+  gl.uniform1f(U.uYaw,   viewYaw   + lean.x + tiltYaw);
+  gl.uniform1f(U.uPitch, viewPitch + lean.y + tiltPitch);
   gl.uniform1f(U.uSpinPhase, ph.spin);
   gl.uniform1f(U.uOrgPhase, ph.org);
   gl.uniform1f(U.uZoom, S.zoom * ZOOM_MUL);
@@ -919,6 +935,14 @@ function frame(now){
     b._prox = 0;
     b.angle += dts * b.speed * mod;
   }
+  /* 1 - exp(-dt/tau) rather than a fixed fraction: the lean then takes the same
+     WALL time to settle on a 60Hz and a 120Hz display. Uses the real dt, not the
+     speed-scaled one -- the cursor is not part of the animation clock. */
+  {
+    const k = 1 - Math.exp(-dt / LEAN_TAU);
+    lean.x += (lean.tx - lean.x) * k;
+    lean.y += (lean.ty - lean.y) * k;
+  }
   resize();
   if (SIL_ON) silCollect();
   drawScene();
@@ -937,6 +961,15 @@ addEventListener("message", ev => {
   if (typeof d.paused === "boolean") PAUSED = d.paused;
   if (typeof d.transparent === "boolean") TRANSPARENT = d.transparent;
   if (typeof d.silhouette === "boolean") SIL_ON = d.silhouette;
+  if (typeof d.lean === "number" && isFinite(d.lean)) LEAN_AMT = Math.max(0, Math.min(1, d.lean));
+  if (d.pointer){
+    /* pointer.has false -- cursor left the window -- eases back to square on */
+    const on = d.pointer.has !== false;
+    const px = on ? Math.max(-1, Math.min(1, d.pointer.x)) : 0;
+    const py = on ? Math.max(-1, Math.min(1, d.pointer.y)) : 0;
+    lean.tx =  px * LEAN_YAW   * LEAN_AMT;
+    lean.ty = -py * LEAN_PITCH * LEAN_AMT;
+  }
 });
 
 /* The O is decoration: it never takes a pointer event, so it never

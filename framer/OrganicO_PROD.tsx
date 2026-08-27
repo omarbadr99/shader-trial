@@ -1,12 +1,15 @@
 // Organic O — Framer production component
-// BUILD: PROD-2
+// BUILD: PROD-3
 //
 // A WebGL "O" whose shape, material and camera morph from preset A to preset B
 // as the visitor scrolls between two sections.
 //
 // This is the PRODUCTION build. It contains no diagnostics, no alternate
-// renderers, no authoring UI, no instrumentation and no pointer handling --
-// the O is decoration and never takes an event. The fragment shader was
+// renderers, no authoring UI and no instrumentation. The O never takes a
+// pointer event: it is a background layer with content stacked on top, so the
+// cursor is watched on the PAGE and posted in, and the iframe stays
+// pointer-events:none. It can lean toward the cursor without ever swallowing a
+// click meant for something above it. The fragment shader was
 // reduced from 74,008 to 17,865 bytes and verified to render
 // BIT-IDENTICALLY to the development build at five scroll positions (0 pixels
 // of 176,400 differing per frame).
@@ -596,6 +599,22 @@ const ph = { t:0, spin:0, org:0, morph:0, stretchA:0.8 };
 let blobs = [];
 let blobSeq = 0;
 let viewYaw = 0, viewPitch = 0;
+
+/* ---------- cursor lean ----------
+   The O is a background layer with content stacked on top of it, so it can
+   never receive a pointer event: whatever sits above takes the pointer first,
+   and giving this iframe pointer-events:auto would just make it swallow clicks
+   meant for that content. The host therefore watches the cursor on the PAGE and
+   posts it in here, already normalised to this frame's box. The canvas stays
+   pointer-events:none for its whole life.
+
+   x and y arrive in -1..1 across the frame. tx/ty are where the lean wants to
+   be; x/y are where it currently is, eased toward the target so the O drifts
+   rather than snapping. */
+const lean = { tx:0, ty:0, x:0, y:0 };
+let LEAN_AMT = 0.35;
+const LEAN_YAW = 0.30, LEAN_PITCH = 0.20;   // radians at full deflection
+const LEAN_TAU = 0.28;                      // seconds to ease, framerate-free
 const blobA   = new Float32Array(MAXB*4);
 const blobAbs = new Float32Array(MAXB*3);
 const pressB  = new Float32Array(MAXB*4);
@@ -703,8 +722,8 @@ function drawScene(W, H){
   gl.uniform1ui(U.uSeedU, (frameN >>> 0));
   gl.uniform1f(U.uSpeckFix, 1);
   gl.uniform1f(U.uForceSpeck, 0);
-  gl.uniform1f(U.uYaw,   viewYaw + tiltYaw);
-  gl.uniform1f(U.uPitch, viewPitch + tiltPitch);
+  gl.uniform1f(U.uYaw,   viewYaw   + lean.x + tiltYaw);
+  gl.uniform1f(U.uPitch, viewPitch + lean.y + tiltPitch);
   gl.uniform1f(U.uSpinPhase, ph.spin);
   gl.uniform1f(U.uOrgPhase, ph.org);
   gl.uniform1f(U.uZoom, S.zoom * ZOOM_MUL);
@@ -940,6 +959,14 @@ function frame(now){
     b._prox = 0;
     b.angle += dts * b.speed * mod;
   }
+  /* 1 - exp(-dt/tau) rather than a fixed fraction: the lean then takes the same
+     WALL time to settle on a 60Hz and a 120Hz display. Uses the real dt, not the
+     speed-scaled one -- the cursor is not part of the animation clock. */
+  {
+    const k = 1 - Math.exp(-dt / LEAN_TAU);
+    lean.x += (lean.tx - lean.x) * k;
+    lean.y += (lean.ty - lean.y) * k;
+  }
   resize();
   if (SIL_ON) silCollect();
   drawScene();
@@ -958,6 +985,15 @@ addEventListener("message", ev => {
   if (typeof d.paused === "boolean") PAUSED = d.paused;
   if (typeof d.transparent === "boolean") TRANSPARENT = d.transparent;
   if (typeof d.silhouette === "boolean") SIL_ON = d.silhouette;
+  if (typeof d.lean === "number" && isFinite(d.lean)) LEAN_AMT = Math.max(0, Math.min(1, d.lean));
+  if (d.pointer){
+    /* pointer.has false -- cursor left the window -- eases back to square on */
+    const on = d.pointer.has !== false;
+    const px = on ? Math.max(-1, Math.min(1, d.pointer.x)) : 0;
+    const py = on ? Math.max(-1, Math.min(1, d.pointer.y)) : 0;
+    lean.tx =  px * LEAN_YAW   * LEAN_AMT;
+    lean.ty = -py * LEAN_PITCH * LEAN_AMT;
+  }
 });
 
 /* The O is decoration: it never takes a pointer event, so it never
@@ -975,7 +1011,7 @@ const PAGE_T = PAGE.replace(
 // The dialled-in looks, baked in as the default A -> B journey.
 const BUILT_IN = {
     t1: {"dials": {"debug": 0, "iso": 0, "ink": 0.95, "gravity": 0.82, "crange": 0.6, "light": 0.9, "glare": 0.85, "speed": 3.65, "fluid": 0, "fcenter": 0.19, "fthick": 0.47, "fdepth": 0.235, "flag": 0.35, "fsmooth": 0.72, "spin": 0.16, "tilt": 0.45, "tiltspd": 1, "wob": 0.45, "wobspd": 0.5, "morph": 0.79, "morphspd": 1.89, "ring": 0.71, "lobe": 0.17, "stretch": 0.14, "tube": 0.175, "flat": 0.7, "taper": 0.28, "zoom": 3.49, "frost": 0.18, "wall": 0.2, "speckle": 0, "soft": 0.9, "grain": 0, "bg": 0.955, "optv1": 1, "refrfull": 1, "exposure": 1.15, "rolloff": 0.85, "lift": 0.015, "shellth": 0.16, "shellcl": 0.7, "coresoft": 0.18, "fresstr": 1, "fresf0": 0.04, "reflstr": 1, "studiorot": 0.5, "stripw": 0.22, "strips": 0.16, "curvresp": 0.6, "hiwidth": 0.09, "hiint": 1, "ior": 1.45, "refrstr": 0.7, "disp": 0.012}, "view": {"yaw": 0, "pitch": 0}, "blobs": [{"color": "#101c33", "size": 0.55, "speed": 0.32, "amt": 1, "tail": 0.6, "drift": 0.45, "follow": false}, {"color": "#386bbc", "size": 0.85, "speed": -0.15, "amt": 0.4, "tail": 0.5, "drift": 0.7, "follow": false}]},
-    t2: {"dials": {"debug": 0, "iso": 0, "ink": 0.95, "gravity": 0.82, "crange": 0.6, "light": 0.9, "glare": 0.85, "speed": 3.65, "fluid": 0, "fcenter": 0.19, "fthick": 0.47, "fdepth": 0.235, "flag": 0.35, "fsmooth": 0.72, "spin": 0.16, "tilt": 0.45, "tiltspd": 1, "wob": 0.64, "wobspd": 0.65, "morph": 0.84, "morphspd": 0.4, "ring": 0.71, "lobe": 0.17, "stretch": 0.14, "tube": 0.175, "flat": 0.7, "taper": 0.19, "zoom": 0.5, "frost": 0, "wall": 0.2, "speckle": 0, "soft": 0.9, "grain": 0, "bg": 0.955, "optv1": 1, "refrfull": 1, "exposure": 1.15, "rolloff": 0.85, "lift": 0.015, "shellth": 0.16, "shellcl": 0.7, "coresoft": 0.18, "fresstr": 1, "fresf0": 0.04, "reflstr": 1, "studiorot": 0.5, "stripw": 0.22, "strips": 0.16, "curvresp": 0.6, "hiwidth": 0.09, "hiint": 1, "ior": 1.45, "refrstr": 0.7, "disp": 0.012}, "view": {"yaw": 2.54591796875, "pitch": 0.0007421874999999742}, "blobs": [{"color": "#101c33", "size": 0.15, "speed": 0.35, "amt": 0, "tail": 0.6, "drift": 0.45, "follow": false}, {"color": "#386bbc", "size": 0.15, "speed": -0.15, "amt": 0, "tail": 0.5, "drift": 0.7, "follow": false}]},
+    t2: {"dials": {"debug": 0, "iso": 0, "ink": 0.95, "gravity": 0.82, "crange": 0.6, "light": 0.9, "glare": 0.85, "speed": 3.65, "fluid": 0, "fcenter": 0.19, "fthick": 0.47, "fdepth": 0.235, "flag": 0.35, "fsmooth": 0.72, "spin": 0.16, "tilt": 0.45, "tiltspd": 1, "wob": 0.64, "wobspd": 0.65, "morph": 0.84, "morphspd": 0.4, "ring": 0.71, "lobe": 0.17, "stretch": 0.14, "tube": 0.175, "flat": 0.7, "taper": 0.19, "zoom": 0.7, "frost": 0, "wall": 0.2, "speckle": 0, "soft": 0.9, "grain": 0, "bg": 0.955, "optv1": 1, "refrfull": 1, "exposure": 1.15, "rolloff": 0.85, "lift": 0.015, "shellth": 0.16, "shellcl": 0.7, "coresoft": 0.18, "fresstr": 1, "fresf0": 0.04, "reflstr": 1, "studiorot": 0.5, "stripw": 0.22, "strips": 0.16, "curvresp": 0.6, "hiwidth": 0.09, "hiint": 1, "ior": 1.45, "refrstr": 0.7, "disp": 0.012}, "view": {"yaw": 2.54591796875, "pitch": 0.0007421874999999742}, "blobs": [{"color": "#101c33", "size": 0.15, "speed": 0.35, "amt": 0, "tail": 0.6, "drift": 0.45, "follow": false}, {"color": "#386bbc", "size": 0.15, "speed": -0.15, "amt": 0, "tail": 0.5, "drift": 0.7, "follow": false}]},
 }
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
@@ -994,7 +1030,7 @@ export default function OrganicO(props) {
         presetAName = "t1", presetBName = "t2",
         presetAJson = "", presetBJson = "",
         scrollStart = 0, scrollEnd = 1, quality = 1,
-        transparentBg = true, zoomMul = 1, style,
+        transparentBg = true, zoomMul = 1, cursorLean = 0.35, style,
     } = props
 
     const ref = useRef(null)
@@ -1042,8 +1078,8 @@ export default function OrganicO(props) {
 
     const sendConfig = useCallback(() => {
         post({ a: A, b: B, dpr: quality,
-               transparent: transparentBg, zoomMul })
-    }, [post, A, B, quality, transparentBg, zoomMul])
+               transparent: transparentBg, zoomMul, lean: cursorLean })
+    }, [post, A, B, quality, transparentBg, zoomMul, cursorLean])
     useEffect(() => { sendConfig() }, [sendConfig])
 
     // scroll -> at most one message per animation frame
@@ -1061,6 +1097,52 @@ export default function OrganicO(props) {
         }
     })
     useEffect(() => () => { if (raf.current) cancelAnimationFrame(raf.current) }, [])
+
+    /* The O cannot receive pointer events -- it sits behind the content, and
+       anything stacked above it takes the pointer first. So watch the cursor on
+       the page instead and post it in, normalised against the iframe's own box.
+       The frame is read in the same callback as the send, so a sticky O that has
+       just stuck or unstuck is measured where it actually is.
+
+       Coalesced to one message per animation frame: pointermove fires far more
+       often than that, and the O can only act on it once per frame anyway. */
+    useEffect(() => {
+        if (!live) return
+        if (typeof matchMedia !== "undefined" &&
+            matchMedia("(prefers-reduced-motion: reduce)").matches) return
+        let pending: { x: number; y: number } | null = null
+        let frame = 0
+        const flush = () => {
+            frame = 0
+            const el = ref.current
+            if (!el || !pending) return
+            const r = el.getBoundingClientRect()
+            if (r.width < 1 || r.height < 1) return
+            post({ pointer: {
+                x: clamp(((pending.x - r.left) / r.width) * 2 - 1, -1, 1),
+                y: clamp(((pending.y - r.top) / r.height) * 2 - 1, -1, 1),
+                has: true,
+            } })
+        }
+        const onMove = (e: PointerEvent) => {
+            pending = { x: e.clientX, y: e.clientY }
+            if (!frame) frame = requestAnimationFrame(flush)
+        }
+        const onLeave = () => {
+            pending = null
+            if (frame) { cancelAnimationFrame(frame); frame = 0 }
+            post({ pointer: { x: 0, y: 0, has: false } })
+        }
+        window.addEventListener("pointermove", onMove, { passive: true })
+        document.addEventListener("mouseleave", onLeave)
+        window.addEventListener("blur", onLeave)
+        return () => {
+            if (frame) cancelAnimationFrame(frame)
+            window.removeEventListener("pointermove", onMove)
+            document.removeEventListener("mouseleave", onLeave)
+            window.removeEventListener("blur", onLeave)
+        }
+    }, [post, live])
 
     /* Zero GPU work when the O cannot be seen: offscreen, or the tab is hidden.
        The page also checks document.hidden itself, which covers the case where
@@ -1119,6 +1201,7 @@ addPropertyControls(OrganicO, {
     scrollStart: { type: ControlType.Number, title: "Scroll start", min: 0, max: 1, step: 0.01, defaultValue: 0 },
     scrollEnd: { type: ControlType.Number, title: "Scroll end", min: 0, max: 1, step: 0.01, defaultValue: 1 },
     quality: { type: ControlType.Number, title: "Quality (DPR)", min: 1, max: 2, step: 0.25, defaultValue: 1, description: "1 = one shader pixel per CSS pixel. Cost scales with the SQUARE of this: 2 is four times the work." },
+    cursorLean: { type: ControlType.Number, title: "Cursor lean", min: 0, max: 1, step: 0.05, defaultValue: 0.35, description: "How far the O turns toward the pointer. 0 = off. Desktop only: touch has no hover, and the O never takes a click either way." },
     zoomMul: { type: ControlType.Number, title: "Scale", min: 0.2, max: 5, step: 0.05, defaultValue: 1, description: "Multiplies the preset zoom. Apparent size follows the container HEIGHT." },
     transparentBg: { type: ControlType.Boolean, title: "Transparent BG", defaultValue: true, enabledTitle: "On", disabledTitle: "Off", description: "Off = the shader paints its own studio backdrop." },
 })

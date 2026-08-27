@@ -1,5 +1,5 @@
 // Organic O — Framer production component
-// BUILD: PROD-3
+// BUILD: PROD-4
 //
 // A WebGL "O" whose shape, material and camera morph from preset A to preset B
 // as the visitor scrolls between two sections.
@@ -1030,7 +1030,8 @@ export default function OrganicO(props) {
         presetAName = "t1", presetBName = "t2",
         presetAJson = "", presetBJson = "",
         scrollStart = 0, scrollEnd = 1, quality = 1,
-        transparentBg = true, zoomMul = 1, cursorLean = 0.35, style,
+        transparentBg = true, zoomMul = 1, cursorLean = 0.35,
+        centerOnViewport = true, style,
     } = props
 
     const ref = useRef(null)
@@ -1126,7 +1127,9 @@ export default function OrganicO(props) {
         }
         const onMove = (e: PointerEvent) => {
             pending = { x: e.clientX, y: e.clientY }
-            if (!frame) frame = requestAnimationFrame(flush)
+            /* same latch as above: never skip on a pending id, replace it */
+            if (frame) cancelAnimationFrame(frame)
+            frame = requestAnimationFrame(flush)
         }
         const onLeave = () => {
             pending = null
@@ -1143,6 +1146,74 @@ export default function OrganicO(props) {
             window.removeEventListener("blur", onLeave)
         }
     }, [post, live])
+
+    /* ---- keep the O centred on what the visitor can actually SEE ----------
+       The shader always centres the O on 0.5 * uRes, and uRes is the iframe's
+       own size, so the O is dead centre of its frame in every browser. When it
+       looks off-centre, it is the FRAME that is not centred on the visible area
+       -- which is a layout fact this component can measure, whatever the reason
+       for it.
+
+       So: measure, do not theorise. `slack` is the spare room between the
+       component box and the viewport, and the correction is clamped to it. That
+       is what keeps the O inside its own section: with a box the same size as
+       the viewport, or smaller, slack is 0 and this does exactly nothing.
+
+       This deliberately does NOT live in the pointer effect and is NOT gated on
+       prefers-reduced-motion: it has to react to scrolling, and it is a
+       correction, not an animation. */
+    useEffect(() => {
+        const el = ref.current
+        if (!live) return
+        if (!centerOnViewport) { if (el) el.style.transform = ""; return }
+        let curX = 0, curY = 0
+        const apply = () => {
+            const f = ref.current
+            if (!f) return
+            const r = f.getBoundingClientRect()
+            if (r.width < 1 || r.height < 1) return
+            const vv = typeof visualViewport !== "undefined" ? visualViewport : null
+            const vLeft = vv ? vv.offsetLeft : 0, vWidth  = vv ? vv.width  : innerWidth
+            const vTop  = vv ? vv.offsetTop  : 0, vHeight = vv ? vv.height : innerHeight
+            const slackX = Math.max(0, (r.width  - vWidth)  / 2)
+            const slackY = Math.max(0, (r.height - vHeight) / 2)
+            /* getBoundingClientRect() already includes the transform written
+               last time, so correct RELATIVE to it. Adding the residual rather
+               than replacing it lands exactly on target in one step instead of
+               oscillating around it. */
+            const dx = clamp(curX + (vLeft + vWidth  / 2 - (r.left + r.width  / 2)), -slackX, slackX)
+            const dy = clamp(curY + (vTop  + vHeight / 2 - (r.top  + r.height / 2)), -slackY, slackY)
+            if (Math.abs(dx - curX) < 0.5 && Math.abs(dy - curY) < 0.5) return
+            curX = dx; curY = dy
+            f.style.transform = (dx || dy) ? `translate3d(${dx}px, ${dy}px, 0)` : ""
+        }
+        /* Run straight off the event rather than deferring to a frame. This is
+           a correction, not an animation: one rect read and, only when the value
+           actually moved, one transform write. Deferring it bought nothing and
+           cost reliability -- a requestAnimationFrame is not guaranteed to run
+           (a throttled or hidden tab, or simply nothing else driving a frame),
+           and while one was outstanding every further event coalesced into it
+           and was lost. Measured: the ResizeObserver fired, the frame never
+           came, and the O stayed mis-centred until an unrelated scroll. Scroll
+           events are already throttled to roughly frame rate by the browser. */
+        const schedule = () => apply()
+        apply()
+        addEventListener("scroll", schedule, { passive: true, capture: true })
+        addEventListener("resize", schedule)
+        visualViewport?.addEventListener("resize", schedule)
+        visualViewport?.addEventListener("scroll", schedule)
+        const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(schedule) : null
+        if (hostRef.current) ro?.observe(hostRef.current)
+        return () => {
+            removeEventListener("scroll", schedule, { capture: true } as any)
+            removeEventListener("resize", schedule)
+            visualViewport?.removeEventListener("resize", schedule)
+            visualViewport?.removeEventListener("scroll", schedule)
+            ro?.disconnect()
+            const f = ref.current
+            if (f) f.style.transform = ""
+        }
+    }, [live, centerOnViewport])
 
     /* Zero GPU work when the O cannot be seen: offscreen, or the tab is hidden.
        The page also checks document.hidden itself, which covers the case where
@@ -1201,6 +1272,7 @@ addPropertyControls(OrganicO, {
     scrollStart: { type: ControlType.Number, title: "Scroll start", min: 0, max: 1, step: 0.01, defaultValue: 0 },
     scrollEnd: { type: ControlType.Number, title: "Scroll end", min: 0, max: 1, step: 0.01, defaultValue: 1 },
     quality: { type: ControlType.Number, title: "Quality (DPR)", min: 1, max: 2, step: 0.25, defaultValue: 1, description: "1 = one shader pixel per CSS pixel. Cost scales with the SQUARE of this: 2 is four times the work." },
+    centerOnViewport: { type: ControlType.Boolean, title: "Center on viewport", defaultValue: true, enabledTitle: "On", disabledTitle: "Off", description: "Keeps the O centred on the visible area when the component is larger than the viewport. Does nothing when it is the same size or smaller." },
     cursorLean: { type: ControlType.Number, title: "Cursor lean", min: 0, max: 1, step: 0.05, defaultValue: 0.35, description: "How far the O turns toward the pointer. 0 = off. Desktop only: touch has no hover, and the O never takes a click either way." },
     zoomMul: { type: ControlType.Number, title: "Scale", min: 0.2, max: 5, step: 0.05, defaultValue: 1, description: "Multiplies the preset zoom. Apparent size follows the container HEIGHT." },
     transparentBg: { type: ControlType.Boolean, title: "Transparent BG", defaultValue: true, enabledTitle: "On", disabledTitle: "Off", description: "Off = the shader paints its own studio backdrop." },

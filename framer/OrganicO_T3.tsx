@@ -892,7 +892,7 @@ function parseJSON(s) {
 }
 
 export default function OrganicOState(props) {
-    const { presetJson = "", quality = 1, scale = 1, style } = props
+    const { presetJson = "", quality = 2, scale = 1, style } = props
     const ref = useRef(null)
     const hostRef = useRef(null)
     const preset = useMemo(() => parseJSON(presetJson) || PRESET, [presetJson])
@@ -954,6 +954,6 @@ export default function OrganicOState(props) {
 
 addPropertyControls(OrganicOState, {
     presetJson: { type: ControlType.String, title: "Preset JSON", displayTextArea: true, placeholder: "(optional) paste an export to override the baked-in state" },
-    quality: { type: ControlType.Number, title: "Quality (DPR)", min: 1, max: 2, step: 0.25, defaultValue: 1, description: "Cost scales with the SQUARE of this: 2 is four times the work." },
+    quality: { type: ControlType.Number, title: "Quality (DPR)", min: 1, max: 2, step: 0.25, defaultValue: 2, description: "2 = one shader pixel per DEVICE pixel, which is what a Retina screen needs to look sharp. This is a CAP, so a non-Retina screen still renders 1x and pays nothing. Measured cost is linear in pixels: 2 is 4x the work of 1, 1.5 is 2.25x." },
     scale: { type: ControlType.Number, title: "Scale", min: 0.2, max: 5, step: 0.05, defaultValue: 1, description: "Multiplies the preset zoom. Apparent size follows the container HEIGHT." },
 })

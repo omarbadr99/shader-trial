@@ -1,5 +1,9 @@
 // Organic O — single state
-// BUILD: T3-1
+// BUILD: T3-2   ring 0.66 · tube 0.15 · zoom 1.49 · spin -0.33 · tilt 0 · yaw -0.704
+//
+// Those numbers ARE the state. If the O looks wrong, check them against the
+// preset below before anything else -- an older copy of this file will show
+// different ones.
 //
 // One fixed look. No scroll, no A-to-B transition, no interpolation: the O
 // simply animates in place on a transparent background.

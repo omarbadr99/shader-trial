@@ -1,5 +1,5 @@
 // Organic O — Framer production component
-// BUILD: PROD-4
+// BUILD: PROD-5
 //
 // A WebGL "O" whose shape, material and camera morph from preset A to preset B
 // as the visitor scrolls between two sections.
@@ -1029,7 +1029,7 @@ export default function OrganicO(props) {
     const {
         presetAName = "t1", presetBName = "t2",
         presetAJson = "", presetBJson = "",
-        scrollStart = 0, scrollEnd = 1, quality = 1,
+        scrollStart = 0, scrollEnd = 1, quality = 2,
         transparentBg = true, zoomMul = 1, cursorLean = 0.35,
         centerOnViewport = true, style,
     } = props
@@ -1271,7 +1271,7 @@ addPropertyControls(OrganicO, {
     presetBJson: { type: ControlType.String, title: "Preset B JSON", displayTextArea: true, placeholder: "(optional) paste t2 JSON" },
     scrollStart: { type: ControlType.Number, title: "Scroll start", min: 0, max: 1, step: 0.01, defaultValue: 0 },
     scrollEnd: { type: ControlType.Number, title: "Scroll end", min: 0, max: 1, step: 0.01, defaultValue: 1 },
-    quality: { type: ControlType.Number, title: "Quality (DPR)", min: 1, max: 2, step: 0.25, defaultValue: 1, description: "1 = one shader pixel per CSS pixel. Cost scales with the SQUARE of this: 2 is four times the work." },
+    quality: { type: ControlType.Number, title: "Quality (DPR)", min: 1, max: 2, step: 0.25, defaultValue: 2, description: "2 = one shader pixel per DEVICE pixel, which is what a Retina screen needs to look sharp. A CAP, not a force: a standard screen still renders 1x and pays nothing. Cost is linear in pixels, so 2 is 4x the work of 1 and 1.5 is 2.25x. Drop to 1.5 if the big scroll-in state drags." },
     centerOnViewport: { type: ControlType.Boolean, title: "Center on viewport", defaultValue: true, enabledTitle: "On", disabledTitle: "Off", description: "Keeps the O centred on the visible area when the component is larger than the viewport. Does nothing when it is the same size or smaller." },
     cursorLean: { type: ControlType.Number, title: "Cursor lean", min: 0, max: 1, step: 0.05, defaultValue: 0.35, description: "How far the O turns toward the pointer. 0 = off. Desktop only: touch has no hover, and the O never takes a click either way." },
     zoomMul: { type: ControlType.Number, title: "Scale", min: 0.2, max: 5, step: 0.05, defaultValue: 1, description: "Multiplies the preset zoom. Apparent size follows the container HEIGHT." },
